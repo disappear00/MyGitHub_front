@@ -1,0 +1,108 @@
+import { http } from './http'
+import type {
+  ApiResponse,
+  AuthResponse,
+  EmailVerifyStatusResponse,
+  GroupResponse,
+  TokenResponse,
+  UserResponse,
+} from './types'
+
+export class ApiBusinessError extends Error {
+  constructor(
+    public readonly code: number,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+function unwrap<T>(res: ApiResponse<T>): T {
+  if (res.code === 200 && res.data !== null) return res.data
+  throw new ApiBusinessError(res.code, res.message || '请求失败')
+}
+
+function unwrapVoid(res: ApiResponse<unknown>): void {
+  if (res.code === 200) return
+  throw new ApiBusinessError(res.code, res.message || '请求失败')
+}
+
+export const authApi = {
+  async login(payload: { user_name: string; password: string }) {
+    const res = await http.post<ApiResponse<AuthResponse>>('/api/v1/auth/login', payload)
+    return unwrap(res.data)
+  },
+  async register(payload: { user_name: string; email: string; phone?: string | null; password: string }) {
+    const res = await http.post<ApiResponse<AuthResponse>>('/api/v1/auth/register', payload)
+    return unwrap(res.data)
+  },
+  async logout(payload: { refresh_token: string }) {
+    const res = await http.post<ApiResponse<null>>('/api/v1/auth/logout', payload)
+    return unwrapVoid(res.data)
+  },
+  async refresh(payload: { refresh_token: string }) {
+    const res = await http.post<ApiResponse<TokenResponse>>('/api/v1/auth/refresh', payload)
+    return unwrap(res.data)
+  },
+  async emailStatus() {
+    const res = await http.get<ApiResponse<EmailVerifyStatusResponse>>('/api/v1/auth/email/status')
+    return unwrap(res.data)
+  },
+  async resendVerifyEmail(payload: { email: string }) {
+    const res = await http.post<ApiResponse<null>>('/api/v1/auth/email/resend', payload)
+    return unwrapVoid(res.data)
+  },
+  async verifyEmail(payload: { token: string }) {
+    const res = await http.post<ApiResponse<{ is_email_verified: boolean; email_verified_at: string | null }>>(
+      '/api/v1/auth/email/verify',
+      payload,
+    )
+    return unwrap(res.data)
+  },
+}
+
+export const userApi = {
+  async list(params?: { order_by_time?: boolean }) {
+    const res = await http.get<ApiResponse<UserResponse[]>>('/api/v1/users', { params })
+    return unwrap(res.data)
+  },
+  async create(payload: {
+    user_name: string
+    email: string
+    phone?: string | null
+    id_card?: string | null
+    group_id?: number | null
+    password: string
+  }) {
+    const res = await http.post<ApiResponse<UserResponse>>('/api/v1/users', payload)
+    return unwrap(res.data)
+  },
+  async update(userId: number, payload: Partial<Omit<UserResponse, 'user_id' | 'created_at' | 'updated_at'>>) {
+    const res = await http.put<ApiResponse<UserResponse>>(`/api/v1/users/${userId}`, payload)
+    return unwrap(res.data)
+  },
+  async remove(userId: number) {
+    const res = await http.delete<ApiResponse<null>>(`/api/v1/users/${userId}`)
+    return unwrapVoid(res.data)
+  },
+}
+
+export const groupApi = {
+  async list(params?: { order_by_path?: boolean }) {
+    const res = await http.get<ApiResponse<GroupResponse[]>>('/api/v1/groups/', { params })
+    return unwrap(res.data)
+  },
+  async create(payload: { group_name: string; parent_id?: number | null; sort_order?: number }) {
+    const res = await http.post<ApiResponse<GroupResponse>>('/api/v1/groups/', payload)
+    return unwrap(res.data)
+  },
+  async update(groupId: number, payload: { group_name?: string; parent_id?: number | null; sort_order?: number }) {
+    const res = await http.put<ApiResponse<GroupResponse>>(`/api/v1/groups/${groupId}`, payload)
+    return unwrap(res.data)
+  },
+  async remove(groupId: number) {
+    const res = await http.delete<ApiResponse<null>>(`/api/v1/groups/${groupId}`)
+    return unwrapVoid(res.data)
+  },
+}
+
