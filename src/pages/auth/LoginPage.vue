@@ -36,7 +36,10 @@ async function onSubmit() {
     <h1 class="text-lg font-semibold text-slate-900">登录</h1>
     <p class="mt-1 text-sm text-slate-600">使用用户名/邮箱/手机号 + 密码登录</p>
 
-    <div v-if="errorMsg" class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+    <div
+      v-if="errorMsg"
+      class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+    >
       {{ errorMsg }}
     </div>
 
@@ -78,4 +81,3 @@ async function onSubmit() {
     </div>
   </div>
 </template>
-

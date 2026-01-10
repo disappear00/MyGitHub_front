@@ -51,17 +51,27 @@ onMounted(async () => {
     <h1 class="text-lg font-semibold text-slate-900">邮箱验证</h1>
     <p class="mt-1 text-sm text-slate-600">支持从邮件链接自动带入 `token`。</p>
 
-    <div v-if="errorMsg" class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+    <div
+      v-if="errorMsg"
+      class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+    >
       {{ errorMsg }}
     </div>
-    <div v-if="okMsg" class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+    <div
+      v-if="okMsg"
+      class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+    >
       {{ okMsg }}
     </div>
 
     <div class="mt-4 space-y-3">
       <div>
         <label class="block text-sm font-medium text-slate-700">token</label>
-        <input v-model="token" class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400" placeholder="token" />
+        <input
+          v-model="token"
+          class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400"
+          placeholder="token"
+        />
       </div>
       <button
         class="w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
@@ -81,4 +91,3 @@ onMounted(async () => {
     </div>
   </div>
 </template>
-

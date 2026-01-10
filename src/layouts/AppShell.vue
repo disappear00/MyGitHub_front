@@ -24,7 +24,9 @@ async function onLogout() {
     <header class="sticky top-0 z-20 border-b border-slate-200 bg-white/80 backdrop-blur">
       <div class="mx-auto flex max-w-7xl items-center gap-4 px-4 py-3">
         <div class="flex items-center gap-2">
-          <div class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-sm font-semibold text-white">
+          <div
+            class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-sm font-semibold text-white"
+          >
             MG
           </div>
           <div class="hidden sm:block">
@@ -46,7 +48,7 @@ async function onLogout() {
 
           <div class="flex items-center gap-2">
             <template v-if="auth.isAuthed">
-              <div class="hidden sm:block text-right">
+              <div class="hidden text-right sm:block">
                 <div class="text-sm font-medium text-slate-900">{{ auth.user?.user_name }}</div>
                 <div class="text-xs text-slate-500">{{ auth.user?.email }}</div>
               </div>
@@ -75,4 +77,3 @@ async function onLogout() {
     <RouterView />
   </div>
 </template>
-

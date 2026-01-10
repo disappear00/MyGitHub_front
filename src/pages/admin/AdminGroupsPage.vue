@@ -46,7 +46,8 @@ async function refresh() {
   loading.value = true
   try {
     groups.value = await groupApi.list({ order_by_path: true })
-    if (selectedId.value && !groups.value.some((g) => g.group_id === selectedId.value)) selectedId.value = null
+    if (selectedId.value && !groups.value.some((g) => g.group_id === selectedId.value))
+      selectedId.value = null
   } catch (e) {
     errorMsg.value = e instanceof ApiBusinessError ? e.message : '加载失败'
   } finally {
@@ -91,7 +92,11 @@ async function onSave() {
   if (modalMode.value === 'edit' && !canUpdate.value) return
   saving.value = true
   try {
-    const payload = { group_name: formName.value.trim(), parent_id: formParentId.value, sort_order: formSortOrder.value }
+    const payload = {
+      group_name: formName.value.trim(),
+      parent_id: formParentId.value,
+      sort_order: formSortOrder.value,
+    }
     if (modalMode.value === 'create') {
       await groupApi.create(payload)
     } else {
@@ -147,7 +152,10 @@ async function onDelete() {
     </div>
   </div>
 
-  <div v-if="errorMsg" class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+  <div
+    v-if="errorMsg"
+    class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+  >
     {{ errorMsg }}
   </div>
 
@@ -155,7 +163,12 @@ async function onDelete() {
     <div class="rounded-2xl border border-slate-200 bg-slate-50/50 p-3">
       <div class="text-xs font-semibold uppercase tracking-wide text-slate-500">分组树</div>
       <div class="mt-2">
-        <GroupTree :nodes="tree" :selected-id="selectedId" @select="(id:number)=> (selectedId = id)" @create-child="openCreate" />
+        <GroupTree
+          :nodes="tree"
+          :selected-id="selectedId"
+          @select="(id: number) => (selectedId = id)"
+          @create-child="openCreate"
+        />
       </div>
     </div>
 
@@ -204,39 +217,71 @@ async function onDelete() {
     </div>
   </div>
 
-  <div v-if="modalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4" role="dialog" aria-modal="true">
+  <div
+    v-if="modalOpen"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4"
+    role="dialog"
+    aria-modal="true"
+  >
     <div class="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
       <div class="flex items-start justify-between gap-4">
-        <div class="text-lg font-semibold text-slate-900">{{ modalMode === 'create' ? '新建分组' : '编辑分组' }}</div>
-        <button class="rounded-lg px-2 py-1 text-slate-500 hover:bg-slate-100" type="button" @click="modalOpen = false">✕</button>
+        <div class="text-lg font-semibold text-slate-900">
+          {{ modalMode === 'create' ? '新建分组' : '编辑分组' }}
+        </div>
+        <button
+          class="rounded-lg px-2 py-1 text-slate-500 hover:bg-slate-100"
+          type="button"
+          @click="modalOpen = false"
+        >
+          ✕
+        </button>
       </div>
 
-      <div v-if="modalError" class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+      <div
+        v-if="modalError"
+        class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+      >
         {{ modalError }}
       </div>
 
       <div class="mt-4 space-y-4">
         <div>
           <label class="block text-sm font-medium text-slate-700">名称</label>
-          <input v-model="formName" class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400" />
+          <input
+            v-model="formName"
+            class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400"
+          />
         </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label class="block text-sm font-medium text-slate-700">父级</label>
-            <select v-model.number="formParentId" class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400">
+            <select
+              v-model.number="formParentId"
+              class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400"
+            >
               <option :value="null">（根）</option>
-              <option v-for="g in groups" :key="g.group_id" :value="g.group_id">{{ g.full_path || g.group_name }}</option>
+              <option v-for="g in groups" :key="g.group_id" :value="g.group_id">
+                {{ g.full_path || g.group_name }}
+              </option>
             </select>
           </div>
           <div>
             <label class="block text-sm font-medium text-slate-700">排序</label>
-            <input v-model.number="formSortOrder" type="number" class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400" />
+            <input
+              v-model.number="formSortOrder"
+              type="number"
+              class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400"
+            />
           </div>
         </div>
       </div>
 
       <div class="mt-6 flex justify-end gap-2">
-        <button class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50" type="button" @click="modalOpen = false">
+        <button
+          class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+          type="button"
+          @click="modalOpen = false"
+        >
           取消
         </button>
         <button

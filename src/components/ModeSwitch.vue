@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/vue'
+import { ChevronDownIcon } from '@heroicons/vue/20/solid'
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -33,11 +34,14 @@ async function onChange(item: (typeof items)[number]) {
   <Listbox :model-value="selected" @update:model-value="onChange">
     <div class="relative">
       <ListboxButton
-        class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+        class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2"
       >
-        <span class="inline-flex h-2 w-2 rounded-full" :class="mode === 'admin' ? 'bg-emerald-500' : 'bg-indigo-500'" />
+        <span
+          class="inline-flex h-2 w-2 rounded-full"
+          :class="mode === 'admin' ? 'bg-emerald-500' : 'bg-indigo-500'"
+        />
         <span>{{ selected.label }}</span>
-        <span class="text-slate-400">▾</span>
+        <ChevronDownIcon class="h-4 w-4 text-slate-400" aria-hidden="true" />
       </ListboxButton>
 
       <ListboxOptions

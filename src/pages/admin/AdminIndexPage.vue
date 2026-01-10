@@ -28,4 +28,3 @@ onMounted(async () => {
 <template>
   <div class="text-sm text-slate-500">Redirecting…</div>
 </template>
-

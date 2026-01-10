@@ -27,4 +27,3 @@ export function writeAuthStorage(state: AuthStorageState): void {
 export function clearAuthStorage(): void {
   localStorage.removeItem(STORAGE_KEY)
 }
-

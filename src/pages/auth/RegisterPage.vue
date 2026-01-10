@@ -41,10 +41,16 @@ async function onSubmit() {
     <h1 class="text-lg font-semibold text-slate-900">注册</h1>
     <p class="mt-1 text-sm text-slate-600">注册后会发送邮箱验证（开发环境可从后端控制台拿 token）</p>
 
-    <div v-if="errorMsg" class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+    <div
+      v-if="errorMsg"
+      class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+    >
       {{ errorMsg }}
     </div>
-    <div v-if="hintMsg" class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+    <div
+      v-if="hintMsg"
+      class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+    >
       {{ hintMsg }}
     </div>
 
@@ -59,15 +65,28 @@ async function onSubmit() {
       </div>
       <div>
         <label class="block text-sm font-medium text-slate-700">邮箱</label>
-        <input v-model="email" class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400" placeholder="name@example.com" />
+        <input
+          v-model="email"
+          class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400"
+          placeholder="name@example.com"
+        />
       </div>
       <div>
         <label class="block text-sm font-medium text-slate-700">手机号（可选）</label>
-        <input v-model="phone" class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400" placeholder="13800138000" />
+        <input
+          v-model="phone"
+          class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400"
+          placeholder="13800138000"
+        />
       </div>
       <div>
         <label class="block text-sm font-medium text-slate-700">密码</label>
-        <input v-model="password" type="password" class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400" placeholder="至少 8 位" />
+        <input
+          v-model="password"
+          type="password"
+          class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400"
+          placeholder="至少 8 位"
+        />
       </div>
       <button
         type="submit"
@@ -80,10 +99,12 @@ async function onSubmit() {
 
     <div class="mt-4 text-sm text-slate-600">
       已有账号？
-      <RouterLink class="font-medium text-slate-900 underline decoration-slate-300 underline-offset-4 hover:decoration-slate-500" to="/auth/login">
+      <RouterLink
+        class="font-medium text-slate-900 underline decoration-slate-300 underline-offset-4 hover:decoration-slate-500"
+        to="/auth/login"
+      >
         去登录
       </RouterLink>
     </div>
   </div>
 </template>
-

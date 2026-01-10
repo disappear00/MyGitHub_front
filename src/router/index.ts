@@ -11,9 +11,24 @@ export const router = createRouter({
       children: [
         {
           path: '',
+          redirect: { name: 'front-chat' },
+        },
+        {
+          path: 'home',
           name: 'front-home',
           component: () => import('@/pages/front/FrontHomePage.vue'),
           meta: { mode: 'front' },
+        },
+        {
+          path: 'chat',
+          name: 'front-chat',
+          component: () => import('@/pages/front/FrontChatPage.vue'),
+          meta: {
+            mode: 'front',
+            requiresAuth: true,
+            requiresVerified: true,
+            requiredPermissions: ['agents.read'],
+          },
         },
         {
           path: 'admin',
@@ -44,6 +59,30 @@ export const router = createRouter({
               component: () => import('@/pages/admin/AdminPermissionsPage.vue'),
               meta: { requiresVerified: true, requiredPermissions: ['permissions.read'] },
             },
+            {
+              path: 'ai/models',
+              name: 'admin-ai-models',
+              component: () => import('@/pages/admin/ai/AdminAIModelsPage.vue'),
+              meta: { requiresVerified: true, requiredPermissions: ['models.read'] },
+            },
+            {
+              path: 'ai/knowledge-bases',
+              name: 'admin-ai-kbs',
+              component: () => import('@/pages/admin/ai/AdminKnowledgeBasesPage.vue'),
+              meta: { requiresVerified: true, requiredPermissions: ['knowledge_bases.read'] },
+            },
+            {
+              path: 'ai/knowledge-bases/:kbId',
+              name: 'admin-ai-kb-detail',
+              component: () => import('@/pages/admin/ai/AdminKnowledgeBaseDetailPage.vue'),
+              meta: { requiresVerified: true, requiredPermissions: ['knowledge_bases.read'] },
+            },
+            {
+              path: 'ai/agents',
+              name: 'admin-ai-agents',
+              component: () => import('@/pages/admin/ai/AdminAgentsPage.vue'),
+              meta: { requiresVerified: true, requiredPermissions: ['agents.read'] },
+            },
           ],
         },
       ],
@@ -65,12 +104,20 @@ export const router = createRouter({
     {
       path: '/verify-email',
       component: () => import('@/layouts/AuthShell.vue'),
-      children: [{ path: '', name: 'verify-email-public', component: () => import('@/pages/public/VerifyEmailPublicPage.vue') }],
+      children: [
+        {
+          path: '',
+          name: 'verify-email-public',
+          component: () => import('@/pages/public/VerifyEmailPublicPage.vue'),
+        },
+      ],
     },
     {
       path: '/reset-password',
       component: () => import('@/layouts/AuthShell.vue'),
-      children: [{ path: '', name: 'reset-password', component: () => import('@/pages/public/ResetPasswordPage.vue') }],
+      children: [
+        { path: '', name: 'reset-password', component: () => import('@/pages/public/ResetPasswordPage.vue') },
+      ],
     },
     { path: '/403', name: 'forbidden', component: () => import('@/pages/ForbiddenPage.vue') },
     { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('@/pages/NotFoundPage.vue') },
@@ -101,7 +148,9 @@ router.beforeEach(async (to) => {
     }
   }
 
-  const requiredPermissions = Array.isArray(to.meta.requiredPermissions) ? (to.meta.requiredPermissions as string[]) : []
+  const requiredPermissions = Array.isArray(to.meta.requiredPermissions)
+    ? (to.meta.requiredPermissions as string[])
+    : []
   if (requiredPermissions.length > 0) {
     if (auth.permissionCodes === null) {
       await auth.refreshPermissions()

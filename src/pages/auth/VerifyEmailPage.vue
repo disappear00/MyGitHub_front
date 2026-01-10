@@ -55,24 +55,37 @@ async function onResend() {
     <h1 class="text-lg font-semibold text-slate-900">邮箱验证</h1>
     <p class="mt-1 text-sm text-slate-600">后端对 `/users`、`/groups` 要求邮箱已验证，否则会 403。</p>
 
-    <div v-if="auth.isEmailVerified" class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+    <div
+      v-if="auth.isEmailVerified"
+      class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+    >
       当前账号已验证邮箱。
     </div>
     <div v-else class="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
       当前账号未验证邮箱：{{ auth.user?.email }}
     </div>
 
-    <div v-if="errorMsg" class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+    <div
+      v-if="errorMsg"
+      class="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+    >
       {{ errorMsg }}
     </div>
-    <div v-if="hintMsg" class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+    <div
+      v-if="hintMsg"
+      class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+    >
       {{ hintMsg }}
     </div>
 
     <div class="mt-4 space-y-3">
       <div>
         <label class="block text-sm font-medium text-slate-700">验证 token</label>
-        <input v-model="token" class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400" placeholder="从邮件或后端控制台复制 token" />
+        <input
+          v-model="token"
+          class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:ring-slate-400"
+          placeholder="从邮件或后端控制台复制 token"
+        />
       </div>
       <div class="flex gap-2">
         <button
@@ -95,4 +108,3 @@ async function onResend() {
     </div>
   </div>
 </template>
-

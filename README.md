@@ -4,14 +4,14 @@
 
 ## 快速开始
 
-1) 安装依赖
+1. 安装依赖
 
 ```bash
 cd MyGitHub_front
 npm install
 ```
 
-2) 配置后端地址（可选）
+2. 配置后端地址（可选）
 
 复制 `.env.example` 为 `.env.local` 并修改：
 
@@ -19,7 +19,7 @@ npm install
 VITE_API_BASE_URL=http://127.0.0.1:9000
 ```
 
-3) 启动开发服务器
+3. 启动开发服务器
 
 ```bash
 npm run dev
@@ -49,4 +49,3 @@ npm run dev
 ## 文档
 
 更详细的后端接口对接与页面说明见：`MyGitHub_front/docs/指导文档.md`。
-

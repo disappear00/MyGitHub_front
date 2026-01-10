@@ -7,7 +7,9 @@ import { RouterLink, RouterView } from 'vue-router'
     <header class="border-b border-slate-200 bg-white/80 backdrop-blur">
       <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
         <RouterLink to="/" class="flex items-center gap-2 font-semibold text-slate-900">
-          <span class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-white">MG</span>
+          <span class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-white"
+            >MG</span
+          >
           <span>MyGitHub</span>
         </RouterLink>
         <div class="text-sm text-slate-600">登录 / 注册</div>
@@ -21,4 +23,3 @@ import { RouterLink, RouterView } from 'vue-router'
     </main>
   </div>
 </template>
-
