@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-import { authApi } from '@/lib/api'
+import { authApi, permissionApi } from '@/lib/api'
 import { clearAuthStorage, readAuthStorage, writeAuthStorage, type AuthStorageState } from '@/lib/authStorage'
 import type { UserLoginResponse } from '@/lib/types'
 
@@ -11,6 +11,7 @@ type AuthState = {
   user: UserLoginResponse | null
   isEmailVerified: boolean | null
   emailVerifiedAt: string | null
+  permissionCodes: string[] | null
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -21,13 +22,17 @@ export const useAuthStore = defineStore('auth', {
     user: null,
     isEmailVerified: null,
     emailVerifiedAt: null,
+    permissionCodes: null,
   }),
   getters: {
     isAuthed: (s) => Boolean(s.accessToken && s.refreshToken && s.user),
+    isSuperuser: (s) => Boolean(s.user?.is_superuser),
+    hasPermission: (s) => {
+      return (code: string) => Boolean(s.user?.is_superuser) || Boolean(s.permissionCodes?.includes(code))
+    },
   },
   actions: {
-    initFromStorage() {
-      if (this.inited) return
+    syncFromStorage() {
       const saved = readAuthStorage()
       if (saved) {
         this.accessToken = saved.accessToken
@@ -35,7 +40,17 @@ export const useAuthStore = defineStore('auth', {
         this.user = saved.user
         this.isEmailVerified = saved.isEmailVerified ?? null
         this.emailVerifiedAt = saved.emailVerifiedAt ?? null
+      } else {
+        this.accessToken = null
+        this.refreshToken = null
+        this.user = null
+        this.isEmailVerified = null
+        this.emailVerifiedAt = null
       }
+    },
+    initFromStorage() {
+      if (this.inited) return
+      this.syncFromStorage()
       this.inited = true
     },
     persist() {
@@ -55,6 +70,7 @@ export const useAuthStore = defineStore('auth', {
       this.user = null
       this.isEmailVerified = null
       this.emailVerifiedAt = null
+      this.permissionCodes = null
       clearAuthStorage()
     },
     async login(user_name: string, password: string) {
@@ -62,8 +78,10 @@ export const useAuthStore = defineStore('auth', {
       this.accessToken = data.token.access_token
       this.refreshToken = data.token.refresh_token
       this.user = data.user
+      this.permissionCodes = null
       this.persist()
       await this.refreshEmailStatus()
+      await this.refreshPermissions()
     },
     async register(user_name: string, email: string, password: string, phone?: string | null) {
       const data = await authApi.register({ user_name, email, password, phone })
@@ -72,8 +90,10 @@ export const useAuthStore = defineStore('auth', {
       this.user = data.user
       this.isEmailVerified = false
       this.emailVerifiedAt = null
+      this.permissionCodes = null
       this.persist()
       await this.refreshEmailStatus()
+      await this.refreshPermissions()
     },
     async logout() {
       const refresh = this.refreshToken
@@ -97,6 +117,15 @@ export const useAuthStore = defineStore('auth', {
         // ignore
       }
     },
+    async refreshPermissions() {
+      if (!this.accessToken) return
+      try {
+        const res = await permissionApi.myPermissions()
+        this.permissionCodes = res.permissions
+      } catch {
+        this.permissionCodes = []
+      }
+    },
     async verifyEmailByToken(token: string) {
       const res = await authApi.verifyEmail({ token })
       this.isEmailVerified = res.is_email_verified
@@ -105,4 +134,3 @@ export const useAuthStore = defineStore('auth', {
     },
   },
 })
-

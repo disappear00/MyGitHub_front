@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { ApiBusinessError, groupApi, userApi } from '@/lib/api'
 import type { GroupResponse, UserResponse } from '@/lib/types'
+import { useAuthStore } from '@/stores/auth'
 
 type UserFormState = {
   user_name: string
@@ -19,6 +20,13 @@ const loading = ref(false)
 const errorMsg = ref<string | null>(null)
 const users = ref<UserResponse[]>([])
 const groups = ref<GroupResponse[]>([])
+
+const auth = useAuthStore()
+auth.initFromStorage()
+
+const canCreate = computed(() => auth.hasPermission('users.create'))
+const canUpdate = computed(() => auth.hasPermission('users.update'))
+const canDelete = computed(() => auth.hasPermission('users.delete'))
 
 const groupById = computed(() => {
   const map = new Map<number, GroupResponse>()
@@ -57,6 +65,7 @@ const form = ref<UserFormState>({
 })
 
 function openCreate() {
+  if (!canCreate.value) return
   modalMode.value = 'create'
   editingUserId.value = null
   form.value = {
@@ -73,6 +82,7 @@ function openCreate() {
 }
 
 function openEdit(u: UserResponse) {
+  if (!canUpdate.value) return
   modalMode.value = 'edit'
   editingUserId.value = u.user_id
   form.value = {
@@ -127,6 +137,7 @@ async function onSave() {
 
 const deletingId = ref<number | null>(null)
 async function onDelete(userId: number) {
+  if (!canDelete.value) return
   if (!confirm('确认删除该用户？（后端为软删除）')) return
   deletingId.value = userId
   try {
@@ -158,6 +169,7 @@ async function onDelete(userId: number) {
       <button
         class="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
         type="button"
+        :disabled="!canCreate"
         @click="openCreate"
       >
         新建用户
@@ -207,11 +219,18 @@ async function onDelete(userId: number) {
             </span>
           </td>
           <td class="px-4 py-3 text-right text-sm">
-            <button class="rounded-lg px-3 py-2 font-medium text-slate-700 hover:bg-slate-100" type="button" @click="openEdit(u)">编辑</button>
+            <button
+              class="rounded-lg px-3 py-2 font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              type="button"
+              :disabled="!canUpdate"
+              @click="openEdit(u)"
+            >
+              编辑
+            </button>
             <button
               class="rounded-lg px-3 py-2 font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-60"
               type="button"
-              :disabled="deletingId === u.user_id"
+              :disabled="!canDelete || deletingId === u.user_id"
               @click="onDelete(u.user_id)"
             >
               删除
@@ -291,7 +310,7 @@ async function onDelete(userId: number) {
         <button
           class="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
           type="button"
-          :disabled="saving"
+          :disabled="saving || (modalMode === 'create' ? !canCreate : !canUpdate)"
           @click="onSave"
         >
           {{ saving ? '保存中…' : '保存' }}
@@ -300,4 +319,3 @@ async function onDelete(userId: number) {
     </div>
   </div>
 </template>
-

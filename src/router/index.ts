@@ -18,20 +18,31 @@ export const router = createRouter({
         {
           path: 'admin',
           component: () => import('@/layouts/AdminShell.vue'),
-          meta: { requiresAuth: true, mode: 'admin' },
+          meta: { requiresAuth: true, mode: 'admin', requiredPermissions: ['ui.admin.access'] },
           children: [
-            { path: '', redirect: { name: 'admin-users' } },
+            {
+              path: '',
+              name: 'admin-index',
+              component: () => import('@/pages/admin/AdminIndexPage.vue'),
+              meta: { requiresVerified: true },
+            },
             {
               path: 'users',
               name: 'admin-users',
               component: () => import('@/pages/admin/AdminUsersPage.vue'),
-              meta: { requiresVerified: true },
+              meta: { requiresVerified: true, requiredPermissions: ['users.read'] },
             },
             {
               path: 'groups',
               name: 'admin-groups',
               component: () => import('@/pages/admin/AdminGroupsPage.vue'),
-              meta: { requiresVerified: true },
+              meta: { requiresVerified: true, requiredPermissions: ['groups.read'] },
+            },
+            {
+              path: 'permissions',
+              name: 'admin-permissions',
+              component: () => import('@/pages/admin/AdminPermissionsPage.vue'),
+              meta: { requiresVerified: true, requiredPermissions: ['permissions.read'] },
             },
           ],
         },
@@ -61,6 +72,7 @@ export const router = createRouter({
       component: () => import('@/layouts/AuthShell.vue'),
       children: [{ path: '', name: 'reset-password', component: () => import('@/pages/public/ResetPasswordPage.vue') }],
     },
+    { path: '/403', name: 'forbidden', component: () => import('@/pages/ForbiddenPage.vue') },
     { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('@/pages/NotFoundPage.vue') },
   ],
 })
@@ -68,6 +80,11 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   auth.initFromStorage()
+  auth.syncFromStorage()
+
+  if (auth.isAuthed && auth.permissionCodes === null) {
+    await auth.refreshPermissions()
+  }
 
   const requiresAuth = Boolean(to.meta.requiresAuth)
   if (requiresAuth && !auth.isAuthed) {
@@ -81,6 +98,18 @@ router.beforeEach(async (to) => {
     }
     if (auth.isEmailVerified === false) {
       return { name: 'verify-email', query: { redirect: to.fullPath } }
+    }
+  }
+
+  const requiredPermissions = Array.isArray(to.meta.requiredPermissions) ? (to.meta.requiredPermissions as string[]) : []
+  if (requiredPermissions.length > 0) {
+    if (auth.permissionCodes === null) {
+      await auth.refreshPermissions()
+    }
+
+    const ok = requiredPermissions.every((p) => auth.hasPermission(p))
+    if (!ok) {
+      return { name: 'forbidden' }
     }
   }
 

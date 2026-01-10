@@ -18,6 +18,7 @@ export type UserLoginResponse = {
   email: string
   phone: string | null
   group_id: number | null
+  is_superuser?: boolean
   created_at: string
 }
 
@@ -39,6 +40,7 @@ export type UserResponse = {
   phone: string | null
   id_card: string | null
   group_id: number | null
+  is_superuser?: boolean
   is_active: boolean
   is_email_verified: boolean
   email_verified_at: string | null
@@ -58,3 +60,36 @@ export type GroupResponse = {
   full_path: string | null
 }
 
+export type PermissionEffect = 'ALLOW' | 'DENY'
+export type PermissionScope = 'SELF' | 'SUBTREE'
+
+export type PermissionResponse = {
+  permission_id: number
+  code: string
+  name: string
+  description: string | null
+  category: string
+  is_assignable: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type GroupPermissionItem = {
+  permission_code: string
+  effect: PermissionEffect
+  scope: PermissionScope
+  scope_group_id: number | null
+}
+
+export type GroupPermissionDirectResponse = {
+  principal_group_id: number
+  items: GroupPermissionItem[]
+}
+
+export type GroupPermissionUpdateRequest = {
+  items: GroupPermissionItem[]
+}
+
+export type MyPermissionsResponse = {
+  permissions: string[]
+}

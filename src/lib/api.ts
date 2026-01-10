@@ -3,7 +3,11 @@ import type {
   ApiResponse,
   AuthResponse,
   EmailVerifyStatusResponse,
+  GroupPermissionDirectResponse,
+  GroupPermissionUpdateRequest,
   GroupResponse,
+  MyPermissionsResponse,
+  PermissionResponse,
   TokenResponse,
   UserResponse,
 } from './types'
@@ -106,3 +110,21 @@ export const groupApi = {
   },
 }
 
+export const permissionApi = {
+  async listPermissions(params?: { assignable_only?: boolean }) {
+    const res = await http.get<ApiResponse<PermissionResponse[]>>('/api/v1/permissions', { params })
+    return unwrap(res.data)
+  },
+  async getGroupPermissions(groupId: number) {
+    const res = await http.get<ApiResponse<GroupPermissionDirectResponse>>(`/api/v1/groups/${groupId}/permissions`)
+    return unwrap(res.data)
+  },
+  async replaceGroupPermissions(groupId: number, payload: GroupPermissionUpdateRequest) {
+    const res = await http.put<ApiResponse<GroupPermissionDirectResponse>>(`/api/v1/groups/${groupId}/permissions`, payload)
+    return unwrap(res.data)
+  },
+  async myPermissions() {
+    const res = await http.get<ApiResponse<MyPermissionsResponse>>('/api/v1/me/permissions')
+    return unwrap(res.data)
+  },
+}

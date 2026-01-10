@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from 'vue'
 import GroupTree from '@/components/admin/GroupTree.vue'
 import { ApiBusinessError, groupApi } from '@/lib/api'
 import type { GroupResponse } from '@/lib/types'
+import { useAuthStore } from '@/stores/auth'
 
 type TreeNode = GroupResponse & { children: TreeNode[] }
 
@@ -11,6 +12,13 @@ const loading = ref(false)
 const errorMsg = ref<string | null>(null)
 const groups = ref<GroupResponse[]>([])
 const selectedId = ref<number | null>(null)
+
+const auth = useAuthStore()
+auth.initFromStorage()
+
+const canCreate = computed(() => auth.hasPermission('groups.create'))
+const canUpdate = computed(() => auth.hasPermission('groups.update'))
+const canDelete = computed(() => auth.hasPermission('groups.delete'))
 
 const tree = computed<TreeNode[]>(() => {
   const byId = new Map<number, TreeNode>()
@@ -57,6 +65,7 @@ const saving = ref(false)
 const modalError = ref<string | null>(null)
 
 function openCreate(parentId?: number | null) {
+  if (!canCreate.value) return
   modalMode.value = 'create'
   modalError.value = null
   formName.value = ''
@@ -67,6 +76,7 @@ function openCreate(parentId?: number | null) {
 
 function openEdit() {
   if (!selected.value) return
+  if (!canUpdate.value) return
   modalMode.value = 'edit'
   modalError.value = null
   formName.value = selected.value.group_name
@@ -77,6 +87,8 @@ function openEdit() {
 
 async function onSave() {
   modalError.value = null
+  if (modalMode.value === 'create' && !canCreate.value) return
+  if (modalMode.value === 'edit' && !canUpdate.value) return
   saving.value = true
   try {
     const payload = { group_name: formName.value.trim(), parent_id: formParentId.value, sort_order: formSortOrder.value }
@@ -97,6 +109,7 @@ async function onSave() {
 
 async function onDelete() {
   if (!selected.value) return
+  if (!canDelete.value) return
   if (!confirm('确认删除该分组？')) return
   try {
     await groupApi.remove(selected.value.group_id)
@@ -123,7 +136,12 @@ async function onDelete() {
       >
         刷新
       </button>
-      <button class="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800" type="button" @click="openCreate(null)">
+      <button
+        class="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+        type="button"
+        :disabled="!canCreate"
+        @click="openCreate(null)"
+      >
         新建根分组
       </button>
     </div>
@@ -151,7 +169,7 @@ async function onDelete() {
           <button
             class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
             type="button"
-            :disabled="!selected"
+            :disabled="!selected || !canUpdate"
             @click="openEdit"
           >
             编辑
@@ -159,7 +177,7 @@ async function onDelete() {
           <button
             class="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 shadow-sm hover:bg-rose-100 disabled:opacity-50"
             type="button"
-            :disabled="!selected"
+            :disabled="!selected || !canDelete"
             @click="onDelete"
           >
             删除
@@ -173,7 +191,12 @@ async function onDelete() {
         <div><span class="text-slate-500">路径：</span>{{ selected.full_path || '—' }}</div>
         <div><span class="text-slate-500">父级：</span>{{ selected.parent_id ?? '—' }}</div>
         <div><span class="text-slate-500">排序：</span>{{ selected.sort_order }}</div>
-        <button class="mt-2 w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800" type="button" @click="openCreate(selected.group_id)">
+        <button
+          class="mt-2 w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          type="button"
+          :disabled="!canCreate"
+          @click="openCreate(selected.group_id)"
+        >
           新建子分组
         </button>
       </div>
@@ -219,7 +242,7 @@ async function onDelete() {
         <button
           class="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
           type="button"
-          :disabled="saving"
+          :disabled="saving || (modalMode === 'create' ? !canCreate : !canUpdate)"
           @click="onSave"
         >
           {{ saving ? '保存中…' : '保存' }}
@@ -228,4 +251,3 @@ async function onDelete() {
     </div>
   </div>
 </template>
-
