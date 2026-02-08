@@ -227,6 +227,13 @@ export const knowledgeBaseApi = {
     )
     return unwrap(res.data)
   },
+  async scrapeWebContent(kbId: number, payload: KBScrapeRequest) {
+    const res = await http.post<ApiResponse<KBScrapeResponse>>(
+      `/api/v1/knowledge-bases/${kbId}/scrape`,
+      payload,
+    )
+    return unwrap(res.data)
+  },
 }
 
 export const mcpApi = {

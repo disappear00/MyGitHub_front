@@ -211,6 +211,19 @@ export type KBQueryResponse = {
   hits: KBChunkHit[]
 }
 
+export type KBScrapeRequest = {
+  url: string
+  crawl_additional: boolean
+  max_pages: number
+  max_depth: number
+}
+
+export type KBScrapeResponse = {
+  documents: KBDocumentResponse[]
+  total_chunks: number
+  scraped_urls: string[]
+}
+
 export type AgentResponse = {
   agent_id: number
   group_id: number

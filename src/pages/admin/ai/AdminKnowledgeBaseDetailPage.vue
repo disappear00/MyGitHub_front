@@ -48,6 +48,13 @@ const uploading = ref(false)
 const uploadError = ref<string | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 
+const scrapeUrl = ref('')
+const crawlAdditional = ref(false)
+const maxPages = ref(10)
+const maxDepth = ref(1)
+const scraping = ref(false)
+const scrapeError = ref<string | null>(null)
+
 const queryText = ref('')
 const topK = ref(5)
 const querying = ref(false)
@@ -112,6 +119,38 @@ async function onQuery() {
     queryError.value = e instanceof ApiBusinessError ? e.message : '检索失败'
   } finally {
     querying.value = false
+  }
+}
+
+async function onScrape() {
+  scrapeError.value = null
+  const id = kbId.value
+  const url = scrapeUrl.value.trim()
+  if (!url) {
+    scrapeError.value = '请输入URL'
+    return
+  }
+  
+  scraping.value = true
+  try {
+    // 显示进度提示
+    scrapeError.value = crawlAdditional.value ? '正在爬取网页及额外链接，这可能需要一些时间...' : '正在爬取网页...'
+    
+    await knowledgeBaseApi.scrapeWebContent(id, {
+      url,
+      crawl_additional: crawlAdditional.value,
+      max_pages: maxPages.value,
+      max_depth: maxDepth.value,
+    })
+    
+    // 清除进度提示
+    scrapeError.value = null
+    scrapeUrl.value = ''
+    await refreshAll()
+  } catch (e) {
+    scrapeError.value = e instanceof ApiBusinessError ? e.message : '爬取失败'
+  } finally {
+    scraping.value = false
   }
 }
 
@@ -237,6 +276,82 @@ function fmtDate(s: string) {
         class="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
       >
         {{ uploadError }}
+      </div>
+    </section>
+
+    <section class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div class="text-sm font-semibold text-slate-900">爬取网页</div>
+      <p class="mt-1 text-xs text-slate-500">
+        对接 `POST /api/v1/knowledge-bases/{id}/scrape` - 输入URL爬取网页内容
+      </p>
+
+      <div
+        v-if="!canUpdate"
+        class="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+      >
+        缺少权限：knowledge_bases.update（爬取会被禁止）
+      </div>
+
+      <div class="mt-3 space-y-3">
+        <div>
+          <label class="block">
+            <div class="text-xs font-semibold text-slate-600">URL地址</div>
+            <input
+              v-model="scrapeUrl"
+              class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm"
+              placeholder="https://example.com/article"
+            />
+          </label>
+        </div>
+        
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <label class="block">
+            <div class="text-xs font-semibold text-slate-600">最大页面数</div>
+            <input
+              v-model.number="maxPages"
+              type="number"
+              min="1"
+              max="50"
+              class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm"
+            />
+          </label>
+          
+          <label class="block">
+            <div class="text-xs font-semibold text-slate-600">最大深度</div>
+            <input
+              v-model.number="maxDepth"
+              type="number"
+              min="0"
+              max="3"
+              class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm"
+            />
+          </label>
+          
+          <label class="flex items-center">
+            <input
+              v-model="crawlAdditional"
+              type="checkbox"
+              class="rounded border-slate-300"
+            />
+            <span class="ml-2 text-sm text-slate-700">爬取额外链接</span>
+          </label>
+        </div>
+        
+        <button
+          class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
+          type="button"
+          :disabled="!canUpdate || scraping || !scrapeUrl.trim()"
+          @click="onScrape"
+        >
+          开始爬取
+        </button>
+      </div>
+
+      <div
+        v-if="scrapeError"
+        class="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+      >
+        {{ scrapeError }}
       </div>
     </section>
   </div>

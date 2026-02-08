@@ -7,7 +7,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:9000
 
 export const http = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 15000,
+  timeout: 120000, // 增加超时时间到2分钟，适应网页爬取等长时间操作
 })
 
 function getAccessToken(): string | null {
@@ -25,7 +25,7 @@ async function refreshToken(): Promise<TokenResponse | null> {
   const res = await axios.post<ApiResponse<TokenResponse>>(
     `${API_BASE_URL}/api/v1/auth/refresh`,
     { refresh_token: refresh },
-    { timeout: 15000 },
+    { timeout: 120000 },
   )
 
   if (res.data.code !== 200 || !res.data.data) return null
