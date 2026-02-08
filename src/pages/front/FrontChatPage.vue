@@ -241,27 +241,86 @@ async function send() {
           messages: [{ role: 'user', content }],
           kb_ids: kbIds,
           rag_top_k: 5,
-          max_tool_rounds: 0,
+          max_tool_rounds: 8,
           max_history_messages: 30,
         },
         {
           signal: agentAbort.signal,
           onEvent: (event, data) => {
-            if (event !== 'meta') return
             try {
-              const payload = JSON.parse(data) as { conversation_id?: number; meta?: Record<string, unknown> }
-              const cur = activeSession.value
-              if (!cur) return
-              setSession(
-                {
-                  ...cur,
-                  mode: 'agent',
-                  conversationId: payload.conversation_id ?? cur.conversationId,
-                  lastMeta: payload.meta ?? cur.lastMeta,
-                  updatedAt: Date.now(),
-                },
-                { resetIfStarted: false },
-              )
+              if (event === 'meta') {
+                const payload = JSON.parse(data) as { conversation_id?: number; meta?: Record<string, unknown> }
+                const cur = activeSession.value
+                if (!cur) return
+                setSession(
+                  {
+                    ...cur,
+                    mode: 'agent',
+                    conversationId: payload.conversation_id ?? cur.conversationId,
+                    lastMeta: payload.meta ?? cur.lastMeta,
+                    updatedAt: Date.now(),
+                  },
+                  { resetIfStarted: false },
+                )
+                return
+              }
+
+              if (event === 'tool_call') {
+                const payload = JSON.parse(data) as {
+                  tool_round?: number
+                  tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown }>
+                }
+                const toolRound = typeof payload.tool_round === 'number' ? payload.tool_round : 0
+                const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls : []
+
+                const lines = toolCalls.map((c) => {
+                  const name = typeof c.name === 'string' ? c.name : '(unknown)'
+                  const args = c.arguments ?? {}
+                  return `- ${name} ${formatJson(args)}`
+                })
+
+                const toolMsg = {
+                  role: 'tool' as const,
+                  content: `【工具调用】第 ${toolRound} 轮\n${lines.join('\n')}`.trim(),
+                  meta: { event: 'tool_call', tool_round: toolRound, tool_calls: toolCalls },
+                  at: Date.now(),
+                }
+
+                const cur = activeSession.value
+                if (!cur) return
+                setSession(
+                  { ...cur, updatedAt: Date.now(), messages: [...cur.messages, toolMsg] },
+                  { resetIfStarted: false },
+                )
+                return
+              }
+
+              if (event === 'tool_result') {
+                const payload = JSON.parse(data) as {
+                  tool_round?: number
+                  tool_name?: string
+                  tool_call_id?: string
+                  arguments?: unknown
+                  output?: unknown
+                }
+                const toolRound = typeof payload.tool_round === 'number' ? payload.tool_round : 0
+                const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '(unknown)'
+                const outText = formatJson(payload.output ?? {})
+                const toolMsg = {
+                  role: 'tool' as const,
+                  content: `【工具结果】第 ${toolRound} 轮 ${toolName}\n${outText}`.trim(),
+                  meta: { event: 'tool_result', ...payload },
+                  at: Date.now(),
+                }
+
+                const cur = activeSession.value
+                if (!cur) return
+                setSession(
+                  { ...cur, updatedAt: Date.now(), messages: [...cur.messages, toolMsg] },
+                  { resetIfStarted: false },
+                )
+                return
+              }
             } catch {
               // ignore
             }
@@ -271,9 +330,15 @@ async function send() {
             const cur = activeSession.value
             if (!cur) return
             const msgs = cur.messages.slice()
-            const last = msgs[msgs.length - 1]
-            if (!last || last.role !== 'assistant') return
-            msgs[msgs.length - 1] = { ...last, content: out }
+            let idx = msgs.length - 1
+            while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+            if (idx < 0) {
+              msgs.push({ role: 'assistant' as const, content: '', at: Date.now() })
+              idx = msgs.length - 1
+            }
+            const last = msgs[idx]
+            if (!last) return
+            msgs[idx] = { ...last, content: out }
             setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
           },
         },
@@ -501,7 +566,9 @@ watch(
               :class="
                 m.role === 'user'
                   ? 'bg-slate-900 text-white'
-                  : 'border border-slate-200 bg-white text-slate-800 shadow-sm'
+                  : m.role === 'tool'
+                    ? 'border border-amber-200 bg-amber-50 font-mono text-xs text-amber-900'
+                    : 'border border-slate-200 bg-white text-slate-800 shadow-sm'
               "
             >
               {{ m.content }}

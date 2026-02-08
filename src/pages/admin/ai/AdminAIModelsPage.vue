@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 
-import { aiModelApi, ApiBusinessError } from '@/lib/api'
+import { aiModelApi, ApiBusinessError, groupApi } from '@/lib/api'
 import { formatJson, safeParseJson } from '@/lib/json'
 import { sseJsonPost } from '@/lib/sse'
-import type { AIModelCreate, AIModelResponse, AIModelUpdate } from '@/lib/types'
+import type { AIModelCreate, AIModelResponse, AIModelUpdate, GroupResponse } from '@/lib/types'
 import { useAuthStore } from '@/stores/auth'
 
 type ModelFormState = {
@@ -25,16 +25,29 @@ auth.initFromStorage()
 const canCreate = computed(() => auth.hasPermission('models.create'))
 const canUpdate = computed(() => auth.hasPermission('models.update'))
 const canDelete = computed(() => auth.hasPermission('models.delete'))
+const canReadGroups = computed(() => auth.hasPermission('groups.read'))
 
 const loading = ref(false)
 const errorMsg = ref<string | null>(null)
 const items = ref<AIModelResponse[]>([])
+const groups = ref<GroupResponse[]>([])
+
+const groupById = computed(() => {
+  const map = new Map<number, GroupResponse>()
+  for (const g of groups.value) map.set(g.group_id, g)
+  return map
+})
 
 async function refreshAll() {
   loading.value = true
   errorMsg.value = null
   try {
-    items.value = await aiModelApi.list()
+    const [m, g] = await Promise.all([
+      aiModelApi.list(),
+      canReadGroups.value ? groupApi.list({ order_by_path: true }) : Promise.resolve([]),
+    ])
+    items.value = m
+    groups.value = g
   } catch (e) {
     errorMsg.value = e instanceof ApiBusinessError ? e.message : '加载失败'
   } finally {
@@ -132,7 +145,6 @@ async function onSave() {
       const id = editingId.value
       if (!id) throw new Error('missing modelId')
       const update: AIModelUpdate = built.value as unknown as AIModelUpdate
-      delete (update as Partial<AIModelCreate>).group_id
       await aiModelApi.update(id, update)
     }
     modalOpen.value = false
@@ -270,6 +282,9 @@ function stopChat() {
               Provider
             </th>
             <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+              分组
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
               可见性
             </th>
             <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -286,6 +301,9 @@ function stopChat() {
             </td>
             <td class="px-4 py-3 text-sm text-slate-700">{{ m.model_kind }}</td>
             <td class="px-4 py-3 text-sm text-slate-700">{{ m.provider }}</td>
+            <td class="px-4 py-3 text-sm text-slate-700">
+              {{ groupById.get(m.group_id)?.full_path || groupById.get(m.group_id)?.group_name || `#${m.group_id}` }}
+            </td>
             <td class="px-4 py-3 text-sm">
               <span
                 class="inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold"
@@ -321,7 +339,7 @@ function stopChat() {
             </td>
           </tr>
           <tr v-if="!loading && items.length === 0">
-            <td class="px-4 py-10 text-center text-sm text-slate-500" colspan="6">暂无数据</td>
+            <td class="px-4 py-10 text-center text-sm text-slate-500" colspan="7">暂无数据</td>
           </tr>
         </tbody>
       </table>
@@ -387,13 +405,26 @@ function stopChat() {
           </select>
         </label>
         <label class="block">
-          <div class="text-xs font-semibold text-slate-600">分组 ID（可选）</div>
-          <input
+          <div class="text-xs font-semibold text-slate-600">分组</div>
+          <select
             v-model.number="form.group_id"
-            type="number"
-            class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm"
-            placeholder="留空则默认当前用户分组"
-          />
+            class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm disabled:bg-slate-50 disabled:text-slate-500"
+            :disabled="!canReadGroups"
+          >
+            <option :value="null">默认（当前用户分组）</option>
+            <option
+              v-if="modalMode === 'edit' && form.group_id !== null && !groupById.has(form.group_id)"
+              :value="form.group_id"
+            >
+              #{{ form.group_id }}
+            </option>
+            <option v-for="g in groups" :key="g.group_id" :value="g.group_id">
+              {{ g.full_path || g.group_name }}
+            </option>
+          </select>
+          <div v-if="!canReadGroups" class="mt-1 text-xs text-amber-700">
+            缺少权限：groups.read（无法拉取分组列表）
+          </div>
         </label>
         <label class="block md:col-span-2">
           <div class="text-xs font-semibold text-slate-600">Base URL（可选）</div>

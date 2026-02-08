@@ -2,15 +2,23 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { ApiBusinessError, knowledgeBaseApi } from '@/lib/api'
+import { aiModelApi, ApiBusinessError, groupApi, knowledgeBaseApi } from '@/lib/api'
 import { formatJson } from '@/lib/json'
-import type { KBDocumentResponse, KBQueryResponse, KnowledgeBaseResponse } from '@/lib/types'
+import type {
+  AIModelResponse,
+  GroupResponse,
+  KBDocumentResponse,
+  KBQueryResponse,
+  KnowledgeBaseResponse,
+} from '@/lib/types'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 auth.initFromStorage()
 
 const canUpdate = computed(() => auth.hasPermission('knowledge_bases.update'))
+const canReadModels = computed(() => auth.hasPermission('models.read'))
+const canReadGroups = computed(() => auth.hasPermission('groups.read'))
 
 const route = useRoute()
 const router = useRouter()
@@ -21,6 +29,20 @@ const loading = ref(false)
 const errorMsg = ref<string | null>(null)
 const kb = ref<KnowledgeBaseResponse | null>(null)
 const docs = ref<KBDocumentResponse[]>([])
+const models = ref<AIModelResponse[]>([])
+const groups = ref<GroupResponse[]>([])
+
+const modelNameById = computed(() => {
+  const map = new Map<number, string>()
+  for (const m of models.value) map.set(m.model_id, m.name)
+  return map
+})
+
+const groupById = computed(() => {
+  const map = new Map<number, GroupResponse>()
+  for (const g of groups.value) map.set(g.group_id, g)
+  return map
+})
 
 const uploading = ref(false)
 const uploadError = ref<string | null>(null)
@@ -38,9 +60,16 @@ async function refreshAll() {
   try {
     const id = kbId.value
     if (!Number.isFinite(id) || id <= 0) throw new Error('invalid kbId')
-    const [k, d] = await Promise.all([knowledgeBaseApi.get(id), knowledgeBaseApi.listDocuments(id)])
+    const [k, d, m, g] = await Promise.all([
+      knowledgeBaseApi.get(id),
+      knowledgeBaseApi.listDocuments(id),
+      canReadModels.value ? aiModelApi.list() : Promise.resolve([]),
+      canReadGroups.value ? groupApi.list({ order_by_path: true }) : Promise.resolve([]),
+    ])
     kb.value = k
     docs.value = d
+    models.value = m
+    groups.value = g
   } catch (e) {
     errorMsg.value = e instanceof ApiBusinessError ? e.message : '加载失败'
   } finally {
@@ -145,11 +174,19 @@ function fmtDate(s: string) {
         </div>
         <div class="flex items-center justify-between gap-3">
           <div class="text-slate-500">Embedding</div>
-          <div class="font-medium">{{ kb.embedding_model_id ?? '—' }}</div>
+          <div class="font-medium">
+            {{
+              kb.embedding_model_id
+                ? (modelNameById.get(kb.embedding_model_id) ?? `#${kb.embedding_model_id}`)
+                : '—'
+            }}
+          </div>
         </div>
         <div class="flex items-center justify-between gap-3">
           <div class="text-slate-500">Group</div>
-          <div class="font-medium">{{ kb.group_id }}</div>
+          <div class="font-medium">
+            {{ groupById.get(kb.group_id)?.full_path || groupById.get(kb.group_id)?.group_name || `#${kb.group_id}` }}
+          </div>
         </div>
         <div class="flex items-center justify-between gap-3">
           <div class="text-slate-500">Updated</div>

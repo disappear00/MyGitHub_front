@@ -23,6 +23,7 @@ import type {
   KnowledgeBaseCreate,
   KnowledgeBaseResponse,
   KnowledgeBaseUpdate,
+  McpToolInfo,
   MyPermissionsResponse,
   PermissionResponse,
   TokenResponse,
@@ -224,6 +225,13 @@ export const knowledgeBaseApi = {
       `/api/v1/knowledge-bases/${kbId}/query`,
       payload,
     )
+    return unwrap(res.data)
+  },
+}
+
+export const mcpApi = {
+  async listTools() {
+    const res = await http.get<ApiResponse<McpToolInfo[]>>('/api/v1/mcp/tools')
     return unwrap(res.data)
   },
 }

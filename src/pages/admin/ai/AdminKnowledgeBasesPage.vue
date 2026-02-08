@@ -2,9 +2,15 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import { ApiBusinessError, knowledgeBaseApi } from '@/lib/api'
+import { aiModelApi, ApiBusinessError, groupApi, knowledgeBaseApi } from '@/lib/api'
 import { formatJson, safeParseJson } from '@/lib/json'
-import type { KnowledgeBaseCreate, KnowledgeBaseResponse, KnowledgeBaseUpdate } from '@/lib/types'
+import type {
+  AIModelResponse,
+  GroupResponse,
+  KnowledgeBaseCreate,
+  KnowledgeBaseResponse,
+  KnowledgeBaseUpdate,
+} from '@/lib/types'
 import { useAuthStore } from '@/stores/auth'
 
 type KBFormState = {
@@ -22,16 +28,39 @@ auth.initFromStorage()
 const canCreate = computed(() => auth.hasPermission('knowledge_bases.create'))
 const canUpdate = computed(() => auth.hasPermission('knowledge_bases.update'))
 const canDelete = computed(() => auth.hasPermission('knowledge_bases.delete'))
+const canReadModels = computed(() => auth.hasPermission('models.read'))
+const canReadGroups = computed(() => auth.hasPermission('groups.read'))
 
 const loading = ref(false)
 const errorMsg = ref<string | null>(null)
 const items = ref<KnowledgeBaseResponse[]>([])
+const models = ref<AIModelResponse[]>([])
+const groups = ref<GroupResponse[]>([])
+
+const modelNameById = computed(() => {
+  const map = new Map<number, string>()
+  for (const m of models.value) map.set(m.model_id, m.name)
+  return map
+})
+
+const groupById = computed(() => {
+  const map = new Map<number, GroupResponse>()
+  for (const g of groups.value) map.set(g.group_id, g)
+  return map
+})
 
 async function refreshAll() {
   loading.value = true
   errorMsg.value = null
   try {
-    items.value = await knowledgeBaseApi.list()
+    const [k, m, g] = await Promise.all([
+      knowledgeBaseApi.list(),
+      canReadModels.value ? aiModelApi.list() : Promise.resolve([]),
+      canReadGroups.value ? groupApi.list({ order_by_path: true }) : Promise.resolve([]),
+    ])
+    items.value = k
+    models.value = m
+    groups.value = g
   } catch (e) {
     errorMsg.value = e instanceof ApiBusinessError ? e.message : '加载失败'
   } finally {
@@ -118,7 +147,6 @@ async function onSave() {
       const id = editingId.value
       if (!id) throw new Error('missing kbId')
       const update: KnowledgeBaseUpdate = built.value as unknown as KnowledgeBaseUpdate
-      delete (update as Partial<KnowledgeBaseCreate>).group_id
       await knowledgeBaseApi.update(id, update)
     }
 
@@ -195,6 +223,9 @@ async function onDelete(id: number) {
               Embedding
             </th>
             <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+              分组
+            </th>
+            <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
               可见性
             </th>
             <th class="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -209,7 +240,16 @@ async function onDelete(id: number) {
               <div class="text-sm font-medium text-slate-900">{{ kb.name }}</div>
               <div class="text-xs text-slate-500">{{ kb.description || '—' }}</div>
             </td>
-            <td class="px-4 py-3 text-sm text-slate-700">{{ kb.embedding_model_id ?? '—' }}</td>
+            <td class="px-4 py-3 text-sm text-slate-700">
+              {{
+                kb.embedding_model_id
+                  ? (modelNameById.get(kb.embedding_model_id) ?? `#${kb.embedding_model_id}`)
+                  : '—'
+              }}
+            </td>
+            <td class="px-4 py-3 text-sm text-slate-700">
+              {{ groupById.get(kb.group_id)?.full_path || groupById.get(kb.group_id)?.group_name || `#${kb.group_id}` }}
+            </td>
             <td class="px-4 py-3 text-sm">
               <span
                 class="inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold"
@@ -244,7 +284,7 @@ async function onDelete(id: number) {
             </td>
           </tr>
           <tr v-if="!loading && items.length === 0">
-            <td class="px-4 py-10 text-center text-sm text-slate-500" colspan="5">暂无数据</td>
+            <td class="px-4 py-10 text-center text-sm text-slate-500" colspan="6">暂无数据</td>
           </tr>
         </tbody>
       </table>
@@ -300,20 +340,52 @@ async function onDelete(id: number) {
           />
         </label>
         <label class="block">
-          <div class="text-xs font-semibold text-slate-600">Embedding 模型 ID（可选）</div>
-          <input
-            v-model.number="form.embedding_model_id"
-            type="number"
-            class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm"
-          />
+          <div class="text-xs font-semibold text-slate-600">Embedding 模型</div>
+          <select
+            v-model="form.embedding_model_id"
+            class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm disabled:bg-slate-50 disabled:text-slate-500"
+            :disabled="!canReadModels || models.filter((x) => x.model_kind === 'embedding').length === 0"
+          >
+            <option :value="null">未选择</option>
+            <option
+              v-if="form.embedding_model_id !== null && !modelNameById.has(form.embedding_model_id)"
+              :value="form.embedding_model_id"
+            >
+              #{{ form.embedding_model_id }}
+            </option>
+            <option
+              v-for="m in models.filter((x) => x.model_kind === 'embedding')"
+              :key="m.model_id"
+              :value="m.model_id"
+            >
+              {{ m.name }}
+            </option>
+          </select>
+          <div v-if="!canReadModels" class="mt-1 text-xs text-amber-700">
+            缺少权限：models.read（无法拉取模型列表）
+          </div>
         </label>
         <label class="block">
-          <div class="text-xs font-semibold text-slate-600">分组 ID（可选）</div>
-          <input
+          <div class="text-xs font-semibold text-slate-600">分组</div>
+          <select
             v-model.number="form.group_id"
-            type="number"
-            class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm"
-          />
+            class="mt-1 w-full rounded-xl border-slate-200 px-3 py-2 text-sm shadow-sm disabled:bg-slate-50 disabled:text-slate-500"
+            :disabled="!canReadGroups"
+          >
+            <option :value="null">默认（当前用户分组）</option>
+            <option
+              v-if="modalMode === 'edit' && form.group_id !== null && !groupById.has(form.group_id)"
+              :value="form.group_id"
+            >
+              #{{ form.group_id }}
+            </option>
+            <option v-for="g in groups" :key="g.group_id" :value="g.group_id">
+              {{ g.full_path || g.group_name }}
+            </option>
+          </select>
+          <div v-if="!canReadGroups" class="mt-1 text-xs text-amber-700">
+            缺少权限：groups.read（无法拉取分组列表）
+          </div>
         </label>
         <label class="flex items-center gap-2">
           <input

@@ -109,6 +109,13 @@ export type ChatResponse = {
   content: string
 }
 
+export type McpToolInfo = {
+  name: string
+  description: string
+  required_permission_codes: string[]
+  openai_tool_def: Record<string, unknown>
+}
+
 export type AIModelResponse = {
   model_id: number
   group_id: number
@@ -138,9 +145,7 @@ export type AIModelCreate = {
   is_private?: boolean
 }
 
-export type AIModelUpdate = Partial<Omit<AIModelCreate, 'group_id'>> & {
-  is_private?: boolean
-}
+export type AIModelUpdate = Partial<AIModelCreate>
 
 export type KnowledgeBaseResponse = {
   kb_id: number
@@ -165,7 +170,7 @@ export type KnowledgeBaseCreate = {
   is_private?: boolean
 }
 
-export type KnowledgeBaseUpdate = Partial<Omit<KnowledgeBaseCreate, 'group_id'>>
+export type KnowledgeBaseUpdate = Partial<KnowledgeBaseCreate>
 
 export type KBDocumentResponse = {
   document_id: number
@@ -231,7 +236,7 @@ export type AgentCreate = {
   is_private?: boolean
 }
 
-export type AgentUpdate = Partial<Omit<AgentCreate, 'group_id'>>
+export type AgentUpdate = Partial<AgentCreate>
 
 export type AgentChatRequest = {
   conversation_id?: number | null

@@ -1,8 +1,9 @@
 import type { ChatRole } from './types'
 
 export type ChatSessionMessage = {
-  role: Extract<ChatRole, 'user' | 'assistant'>
+  role: Extract<ChatRole, 'system' | 'user' | 'assistant' | 'tool'>
   content: string
+  meta?: Record<string, unknown>
   at: number
 }
 
@@ -43,15 +44,36 @@ function safeParseJson<T>(raw: string | null): T | null {
 export function loadChatSessions(): ChatSession[] {
   const data = safeParseJson<unknown>(localStorage.getItem(STORAGE_KEY))
   if (!Array.isArray(data)) return []
+
   return data
     .filter((x): x is ChatSession => Boolean(x) && typeof x === 'object')
     .map((x) => x as ChatSession)
     .map((s) => {
+      const msgsRaw = Array.isArray(s.messages) ? (s.messages as unknown[]) : []
+      const msgs = msgsRaw
+        .filter((m): m is Record<string, unknown> => Boolean(m) && typeof m === 'object')
+        .map((m) => {
+          const role = m.role
+          const content = m.content
+          const at = m.at
+          const meta = m.meta
+          return {
+            role:
+              role === 'system' || role === 'user' || role === 'assistant' || role === 'tool'
+                ? role
+                : 'assistant',
+            content: typeof content === 'string' ? content : '',
+            meta: meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : undefined,
+            at: typeof at === 'number' ? at : Date.now(),
+          } as ChatSessionMessage
+        })
+
       return {
         ...s,
         mode: 'agent' as const,
         modelId: undefined,
         kbIds: Array.isArray(s.kbIds) ? s.kbIds.filter((n) => typeof n === 'number') : [],
+        messages: msgs,
       }
     })
     .filter((s) => typeof s.id === 'string' && typeof s.createdAt === 'number' && typeof s.updatedAt === 'number')

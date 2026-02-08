@@ -43,6 +43,35 @@ const permissionOptions = computed(() => {
   )
 })
 
+async function grantAll() {
+  if (!principalGroupId.value) return
+  if (!canGrant.value) return
+  if (permissionOptions.value.length === 0) return
+
+  const ok = window.confirm('将为该分组分配全部权限（ALLOW / SUBTREE），并覆盖当前规则。是否继续？')
+  if (!ok) return
+
+  rules.value = permissionOptions.value.map((p) => ({
+    permission_code: p.code,
+    effect: 'ALLOW',
+    scope: 'SUBTREE',
+    scope_group_id: null,
+  }))
+
+  await save()
+}
+
+async function clearAll() {
+  if (!principalGroupId.value) return
+  if (!canGrant.value) return
+
+  const ok = window.confirm('将清空该分组的所有权限规则，并立即保存。是否继续？')
+  if (!ok) return
+
+  rules.value = []
+  await save()
+}
+
 function addRule() {
   if (!principalGroupId.value) return
   rules.value.push({
@@ -155,6 +184,22 @@ onMounted(loadBase)
       >
         {{ saving ? 'Saving…' : 'Save' }}
       </button>
+      <button
+        class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 shadow-sm hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+        type="button"
+        :disabled="saving || loading || !canGrant || !principalGroupId"
+        @click="clearAll"
+      >
+        清空全部权限
+      </button>
+      <button
+        class="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        type="button"
+        :disabled="saving || loading || !canGrant || !principalGroupId || permissionOptions.length === 0"
+        @click="grantAll"
+      >
+        一键分配全部权限
+      </button>
     </div>
   </div>
 
@@ -192,7 +237,7 @@ onMounted(loadBase)
     </div>
 
     <div class="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-      <div class="overflow-x-auto">
+      <div class="max-h-[calc(100vh-320px)] overflow-auto">
         <table class="min-w-full divide-y divide-slate-200">
           <thead class="bg-slate-50">
             <tr>
