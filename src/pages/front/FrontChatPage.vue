@@ -561,15 +561,53 @@ watch(
             class="flex"
             :class="m.role === 'user' ? 'justify-end' : 'justify-start'"
           >
+            <!-- 工具消息：默认可折叠 -->
+            <details
+              v-if="m.role === 'tool'"
+              class="group max-w-[85%] rounded-2xl border border-amber-200 bg-amber-50"
+              :open="false"
+            >
+              <summary
+                class="cursor-pointer select-none rounded-2xl px-4 py-3 font-mono text-xs text-amber-900 hover:bg-amber-100"
+              >
+                <span class="inline-flex items-center gap-2">
+                  <svg
+                    class="h-3 w-3 transition-transform group-open:rotate-90"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      d="M9 5l7 7-7 7"
+                    />
+                  </svg>
+                  <span v-if="m.content.startsWith('【工具调用】')">工具调用</span>
+                  <span v-else-if="m.content.startsWith('【工具结果】')">工具结果</span>
+                  <span v-else>工具信息</span>
+                </span>
+              </summary>
+              <div
+                class="whitespace-pre-wrap border-t border-amber-200 px-4 py-3 font-mono text-xs text-amber-900"
+              >
+                {{ m.content }}
+              </div>
+            </details>
+
+            <!-- 用户消息 -->
             <div
-              class="max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed"
-              :class="
-                m.role === 'user'
-                  ? 'bg-slate-900 text-white'
-                  : m.role === 'tool'
-                    ? 'border border-amber-200 bg-amber-50 font-mono text-xs text-amber-900'
-                    : 'border border-slate-200 bg-white text-slate-800 shadow-sm'
-              "
+              v-else-if="m.role === 'user'"
+              class="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-slate-900 px-4 py-3 text-sm leading-relaxed text-white"
+            >
+              {{ m.content }}
+            </div>
+
+            <!-- 助手消息 -->
+            <div
+              v-else
+              class="max-w-[85%] whitespace-pre-wrap rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-800 shadow-sm"
             >
               {{ m.content }}
             </div>
