@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { marked } from 'marked'
 
 import { agentApi, aiModelApi, knowledgeBaseApi } from '@/lib/api'
 import { formatJson } from '@/lib/json'
@@ -17,6 +18,31 @@ import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 auth.initFromStorage()
+
+function renderMarkdown(content: string): string {
+  try {
+    if (!content) return ''
+
+    // Protect URLs so punctuation inside them won't be modified
+    const urls: string[] = []
+    const tmp = content.replace(/https?:\/\/\S+/g, (m) => {
+      const i = urls.length
+      urls.push(m)
+      return `__URL_PLACEHOLDER_${i}__`
+    })
+
+    // Insert Markdown line-breaks after sentence-ending punctuation, excluding '.' to avoid splitting URLs
+    // Two trailing spaces + newline create a Markdown <br>
+    const withBreaks = tmp.replace(/([。！？;；!?])\s*/g, '$1  \n')
+
+    // Restore URLs
+    const restored = withBreaks.replace(/__URL_PLACEHOLDER_(\d+)__/g, (_m, idx) => urls[Number(idx)] || '')
+
+    return marked.parse(restored, { async: false }) as string || content
+  } catch {
+    return content
+  }
+}
 
 const canReadAgents = computed(() => auth.hasPermission('agents.read'))
 const canReadModels = computed(() => auth.hasPermission('models.read'))
@@ -607,10 +633,9 @@ watch(
             <!-- 助手消息 -->
             <div
               v-else
-              class="max-w-[85%] whitespace-pre-wrap rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-800 shadow-sm"
-            >
-              {{ m.content }}
-            </div>
+              class="max-w-[85%] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-800 shadow-sm prose prose-slate max-w-none"
+              v-html="renderMarkdown(m.content)"
+            ></div>
           </div>
         </template>
       </div>
