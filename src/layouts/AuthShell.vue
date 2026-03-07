@@ -10,7 +10,7 @@ import { RouterLink, RouterView } from 'vue-router'
           <span class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900 text-white"
             >MG</span
           >
-          <span>MyGitHub</span>
+          <span>旅游咨询平台</span>
         </RouterLink>
         <div class="text-sm text-slate-600">登录 / 注册</div>
       </div>

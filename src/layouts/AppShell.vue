@@ -30,8 +30,8 @@ async function onLogout() {
             MG
           </div>
           <div class="hidden sm:block">
-            <div class="text-sm font-semibold text-slate-900">MyGitHub</div>
-            <div class="text-xs text-slate-500">FastAPI + Vue3</div>
+            <div class="text-sm font-semibold text-slate-900">旅游咨询平台</div>
+            <div class="text-xs text-slate-500">旅游问答助手</div>
           </div>
         </div>
 
