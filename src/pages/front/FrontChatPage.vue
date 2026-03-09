@@ -23,9 +23,16 @@ function renderMarkdown(content: string): string {
   try {
     if (!content) return ''
 
+    const codeBlocks: string[] = []
+    const withCodePlaceholders = content.replace(/```[\s\S]*?```/g, (m) => {
+      const i = codeBlocks.length
+      codeBlocks.push(m)
+      return `__CODE_BLOCK_PLACEHOLDER_${i}__`
+    })
+
     // Protect URLs so punctuation inside them won't be modified
     const urls: string[] = []
-    const tmp = content.replace(/https?:\/\/\S+/g, (m) => {
+    const tmp = withCodePlaceholders.replace(/https?:\/\/\S+/g, (m) => {
       const i = urls.length
       urls.push(m)
       return `__URL_PLACEHOLDER_${i}__`
@@ -36,7 +43,11 @@ function renderMarkdown(content: string): string {
     const withBreaks = tmp.replace(/([。！？;；!?])\s*/g, '$1  \n')
 
     // Restore URLs
-    const restored = withBreaks.replace(/__URL_PLACEHOLDER_(\d+)__/g, (_m, idx) => urls[Number(idx)] || '')
+    const restoredUrls = withBreaks.replace(/__URL_PLACEHOLDER_(\d+)__/g, (_m, idx) => urls[Number(idx)] || '')
+    const restored = restoredUrls.replace(
+      /__CODE_BLOCK_PLACEHOLDER_(\d+)__/g,
+      (_m, idx) => codeBlocks[Number(idx)] || '',
+    )
 
     return marked.parse(restored, { async: false }) as string || content
   } catch {
@@ -345,6 +356,26 @@ async function send() {
                   { ...cur, updatedAt: Date.now(), messages: [...cur.messages, toolMsg] },
                   { resetIfStarted: false },
                 )
+                return
+              }
+
+              if (event === 'final') {
+                const payload = JSON.parse(data) as { content?: string }
+                const finalContent = typeof payload.content === 'string' ? payload.content : ''
+                const cur = activeSession.value
+                if (!cur) return
+                const msgs = cur.messages.slice()
+                let idx = msgs.length - 1
+                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                if (idx < 0) {
+                  msgs.push({ role: 'assistant' as const, content: finalContent, at: Date.now() })
+                } else {
+                  const last = msgs[idx]
+                  if (!last) return
+                  msgs[idx] = { ...last, content: finalContent }
+                }
+                out = finalContent
+                setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
                 return
               }
             } catch {
