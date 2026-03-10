@@ -20,6 +20,8 @@ import type {
   KBDocumentResponse,
   KBQueryRequest,
   KBQueryResponse,
+  KBScrapeRequest,      // ← 添加这一行
+  KBScrapeResponse, 
   KnowledgeBaseCreate,
   KnowledgeBaseResponse,
   KnowledgeBaseUpdate,
