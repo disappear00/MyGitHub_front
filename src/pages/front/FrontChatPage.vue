@@ -73,6 +73,8 @@ const input = ref('')
 const sending = ref(false)
 const messageListEl = ref<HTMLElement | null>(null)
 const agentStreaming = ref(true)
+const compareMode = ref(false)
+const rawLlmContent = ref<string | null>(null)
 let agentAbort: AbortController | null = null
 
 const activeSession = computed<ChatSession | null>(() => {
@@ -245,7 +247,15 @@ async function send() {
           max_history_messages: 30,
         })
 
-        const assistantMsg = { role: 'assistant' as const, content: res.content, at: Date.now() }
+        const assistantMsg = {
+          role: 'assistant' as const,
+          content: res.content,
+          at: Date.now(),
+          meta: {
+            raw_content: res.raw_content ?? undefined,
+            sources: res.sources ?? undefined,
+          },
+        }
         setSession(
           {
             ...optimistic,
@@ -261,7 +271,10 @@ async function send() {
         return
       }
 
-      const assistantMsg = { role: 'assistant' as const, content: '', at: Date.now() }
+      // 对比模式：预置占位消息（确保对比视图始终渲染）
+      const assistantMsg: ChatSessionMessage = compareMode.value
+        ? { role: 'assistant' as const, content: '', at: Date.now(), meta: { raw_content: '', _rawLoading: true } }
+        : { role: 'assistant' as const, content: '', at: Date.now() }
       setSession(
         { ...optimistic, updatedAt: Date.now(), messages: [...optimistic.messages, assistantMsg] },
         { resetIfStarted: false },
@@ -271,6 +284,30 @@ async function send() {
       agentAbort = new AbortController()
       let out = ''
 
+      // ── 对比模式：并行发起独立的原始 LLM 请求（结果写入 rawLlmContent ref）──
+      const modelId = selectedAgent.value?.model_id ?? null
+      rawLlmContent.value = null  // 重置
+      if (compareMode.value && modelId) {
+        aiModelApi.chat(modelId, {
+          messages: [{ role: 'user', content }],
+        }).then((res) => {
+          rawLlmContent.value = res.content
+          // 实时更新当前 assistant 消息的 raw_content（不等 SSE 结束）
+          const cur = activeSession.value
+          if (cur) {
+            const msgs = cur.messages.slice()
+            let idx = msgs.length - 1
+            while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+            if (idx >= 0 && msgs[idx]) {
+              const last = msgs[idx]
+              msgs[idx] = { ...last, meta: { ...(last.meta as Record<string, unknown>), raw_content: res.content, _rawLoading: false } }
+              setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+            }
+          }
+        }).catch(() => {})
+      }
+
+      // ── Agent SSE 主请求（不再携带 compare 参数）──
       await sseJsonPost(
         `/api/v1/agents/${agentId}/chat?stream=true`,
         {
@@ -372,7 +409,17 @@ async function send() {
                 } else {
                   const last = msgs[idx]
                   if (!last) return
-                  msgs[idx] = { ...last, content: finalContent }
+                  // 对比模式：保留/更新 raw_content（可能已有值或仍为加载中占位）
+                  const existingRaw = (last.meta as Record<string, unknown>)?.raw_content as string | undefined
+                  msgs[idx] = {
+                    ...last,
+                    content: finalContent,
+                    meta: {
+                      ...(last.meta as Record<string, unknown>),
+                      raw_content: rawLlmContent.value ?? existingRaw ?? '',
+                      _rawLoading: !rawLlmContent.value && compareMode.value,
+                    },
+                  }
                 }
                 out = finalContent
                 setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
@@ -400,6 +447,34 @@ async function send() {
           },
         },
       )
+
+      // ── 对比模式：确保原始 LLM 结果已合并到消息中 ──
+      if (compareMode.value && !rawLlmContent.value) {
+        // 等待原始 LLM 最多 3 秒
+        const deadline = Date.now() + 3000
+        while (!rawLlmContent.value && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 200))
+        }
+        // 超时则标记为加载失败
+        if (!rawLlmContent.value) {
+          const cur = activeSession.value
+          if (cur) {
+            const msgs = cur.messages.slice()
+            let idx = msgs.length - 1
+            while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+            if (idx >= 0 && msgs[idx]) {
+              const last = msgs[idx]
+              const meta = last.meta as Record<string, unknown>
+              if (!meta?.raw_content || meta._rawLoading) {
+                msgs[idx] = { ...last, meta: { ...meta, raw_content: '[原始 LLM 响应超时]', _rawLoading: false } }
+                setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+              }
+            }
+          }
+        } else {
+          // 在等待期间 rawLlmContent 已到达（通过 .then 回调已写入），无需重复操作
+        }
+      }
 
       await scrollToBottom()
       return
@@ -662,11 +737,99 @@ watch(
             </div>
 
             <!-- 助手消息 -->
-            <div
-              v-else
-              class="max-w-[85%] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-800 shadow-sm prose prose-slate max-w-none"
-              v-html="renderMarkdown(m.content)"
-            ></div>
+            <template v-else-if="m.role === 'assistant'">
+              <!-- 对比模式：左右分栏 -->
+              <div
+                v-if="compareMode && (m.meta as Record<string, unknown>)?.raw_content"
+                class="flex w-full max-w-[95%] flex-col gap-3"
+              >
+                <div class="flex items-center gap-2 text-xs font-medium">
+                  <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-indigo-700">对比视图</span>
+                  <span class="text-slate-400">左侧 = 原始 LLM 响应 | 右侧 = Agent 编排输出</span>
+                </div>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <!-- 左：原始 LLM 响应 -->
+                  <div class="flex flex-col rounded-xl border border-rose-200 bg-rose-50/50">
+                    <div class="flex items-center justify-between border-b border-rose-200 px-4 py-2">
+                      <div class="flex items-center gap-2">
+                        <span class="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-700">
+                          <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+                          原始 LLM
+                        </span>
+                        <span class="text-xs text-slate-400">无 RAG / 无工具</span>
+                      </div>
+                      <span class="shrink-0 text-xs text-slate-400">{{ ((m.meta as Record<string, unknown>).raw_content as string).length }} 字</span>
+                    </div>
+
+                    <!-- 状态1：加载中 -->
+                    <template v-if="(m.meta as Record<string, unknown>)?._rawLoading">
+                      <div class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-slate-400">
+                        <svg class="h-8 w-8 animate-spin text-rose-300" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" /><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                        <div class="text-center">
+                          <div class="text-xs font-medium text-rose-500">原始 LLM 响应中</div>
+                          <div class="mt-1 text-xs text-slate-300">正在调用 {{ selectedAgent?.model_id ? (modelNameById.get(selectedAgent.model_id) ?? '绑定模型') : 'LLM' }} 接口…</div>
+                        </div>
+                      </div>
+                    </template>
+
+                    <!-- 状态2/3：已返回内容（无论长短都正常渲染，加提示条）-->
+                    <template v-else>
+                      <!-- 过短/异常提示条 -->
+                      <div
+                        v-if="((m.meta as Record<string, unknown>).raw_content as string).length > 0
+                              && ((m.meta as Record<string, unknown>).raw_content as string).length < 30
+                              || (m.meta as Record<string, unknown>).raw_content === '[原始 LLM 响应超时]'"
+                        class="mx-4 mt-3 rounded-lg bg-amber-50/80 px-3 py-2 text-xs"
+                      >
+                        <div class="flex items-start gap-2 text-amber-700">
+                          <svg class="mt-0.5 h-4 w-4 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.227 2.502-4.95A49.45 49.45 0 0112 11c0 27.46-13.25 48.74-29.76C4.636 51.766 1 44.046 1 26 0 11.55 9.35 21 21 21s9.35-9.45 21-21z" /></svg>
+                          <span>
+                            <span class="font-medium">原始 LLM 输出极短</span>
+                            — 模型无外部知识增强时的典型表现。
+                            右侧为 Agent 经过 RAG + 工具调用后的完整回答。
+                          </span>
+                        </div>
+                      </div>
+                      <!-- 内容区 -->
+                      <div class="max-h-[500px] flex-1 overflow-auto p-4 text-sm leading-relaxed prose prose-sm prose-slate max-w-none" v-html="renderMarkdown((m.meta as Record<string, unknown>).raw_content as string)"></div>
+                    </template>
+                  </div>
+                  <!-- 右：Agent 编排输出 -->
+                  <div class="flex flex-col rounded-xl border border-emerald-200 bg-emerald-50/50">
+                    <div class="flex items-center justify-between border-b border-emerald-200 px-4 py-2">
+                      <div class="flex items-center gap-2">
+                        <span class="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                          <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+                          Agent 编排
+                        </span>
+                        <span class="text-xs text-slate-400">RAG + 工具 + 整合</span>
+                      </div>
+                      <span class="shrink-0 text-xs text-slate-400">{{ m.content.length }} 字</span>
+                    </div>
+                    <div class="max-h-[500px] flex-1 overflow-auto p-4 text-sm leading-relaxed text-slate-800 prose prose-sm prose-slate max-w-none shadow-sm" v-html="renderMarkdown(m.content)"></div>
+                  </div>
+                </div>
+                <!-- 对比差异摘要 -->
+                <div v-if="(m.meta as Record<string, unknown>)?.raw_content" class="rounded-lg border border-indigo-100 bg-indigo-50/50 px-4 py-2 text-xs text-indigo-600">
+                  差异：
+                  <span class="font-semibold text-indigo-700">{{ m.content.length }}</span>
+                  字（Agent）vs
+                  <span class="font-semibold text-rose-600">{{ ((m.meta as Record<string, unknown>).raw_content as string).length || '加载中…' }}</span>
+                  字（原始）
+                  <template v-if="((m.meta as Record<string, unknown>).raw_content as string)">
+                    · Agent 输出约是原始的
+                    <span class="font-semibold">{{ Math.max(1, Math.round(m.content.length / Math.max(1, ((m.meta as Record<string, unknown>).raw_content as string).length))) }}</span>
+                    倍
+                  </template>
+                </div>
+              </div>
+              <!-- 普通模式：单栏助手消息 -->
+              <div
+                v-else
+                class="max-w-[85%] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-800 shadow-sm prose prose-slate max-w-none"
+                v-html="renderMarkdown(m.content)"
+              ></div>
+            </template>
           </div>
         </template>
       </div>
@@ -694,14 +857,24 @@ watch(
         </div>
 
         <div class="mt-2 flex items-center justify-between text-xs text-slate-500">
-          <label class="flex items-center gap-2">
-            <input
-              v-model="agentStreaming"
-              type="checkbox"
-              class="rounded border-slate-300 text-slate-900 focus:ring-slate-400"
-            />
-            流式输出（SSE）
-          </label>
+          <div class="flex items-center gap-4">
+            <label class="flex items-center gap-2">
+              <input
+                v-model="agentStreaming"
+                type="checkbox"
+                class="rounded border-slate-300 text-slate-900 focus:ring-slate-400"
+              />
+              流式输出（SSE）
+            </label>
+            <label class="flex items-center gap-2">
+              <input
+                v-model="compareMode"
+                type="checkbox"
+                class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-400"
+              />
+              <span class="text-indigo-600 font-medium">对比模式（原始 vs Agent）</span>
+            </label>
+          </div>
           <div v-if="sending && agentStreaming" class="text-slate-500">输出中…</div>
         </div>
 

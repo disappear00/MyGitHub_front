@@ -260,8 +260,18 @@ export type AgentChatRequest = {
   max_history_messages?: number
 }
 
+export type SourceInfo = {
+  source_type: string
+  source_id: string | null
+  content: string
+  score?: number | null
+}
+
 export type AgentChatResponse = {
   conversation_id: number
   content: string
   meta: Record<string, unknown>
+  // 对比模式字段（compare=true 时返回）
+  raw_content?: string | null       // 原始 LLM 直接响应（无 RAG、无工具）
+  sources?: SourceInfo[] | null     // 信息来源（知识库检索结果等）
 }
