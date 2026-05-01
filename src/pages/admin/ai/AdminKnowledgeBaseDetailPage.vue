@@ -86,6 +86,33 @@ async function refreshAll() {
 
 onMounted(refreshAll)
 
+const showConfirmDialog = ref(false)
+const confirmTitle = ref('')
+const confirmMessage = ref('')
+const confirmCallback = ref<(() => void) | null>(null)
+
+function confirm(title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirmTitle.value = title
+    confirmMessage.value = message
+    showConfirmDialog.value = true
+    confirmCallback.value = () => resolve(true)
+  })
+}
+
+function onConfirmCancel() {
+  showConfirmDialog.value = false
+  confirmCallback.value = null
+}
+
+function onConfirmOk() {
+  showConfirmDialog.value = false
+  if (confirmCallback.value) {
+    confirmCallback.value()
+    confirmCallback.value = null
+  }
+}
+
 async function onUpload() {
   uploadError.value = null
   const id = kbId.value
@@ -94,6 +121,19 @@ async function onUpload() {
     uploadError.value = '请选择文件'
     return
   }
+
+  const fileSizeKB = file.size / 1024
+  const estimatedChunks = Math.ceil(fileSizeKB / 2)
+  if (estimatedChunks > 25) {
+    const confirmed = await confirm(
+      '文件较大，需要分批处理',
+      `文件大小约 ${fileSizeKB.toFixed(1)} KB，预计将产生约 ${estimatedChunks} 个文本片段。\n\n` +
+      `由于 Embedding API 限制，系统将自动分批处理（每批最多 25 个片段）。\n\n` +
+      `这可能需要一些时间，是否继续？`
+    )
+    if (!confirmed) return
+  }
+
   uploading.value = true
   try {
     await knowledgeBaseApi.uploadDocument(id, file)
@@ -130,10 +170,19 @@ async function onScrape() {
     scrapeError.value = '请输入URL'
     return
   }
+
+  if (crawlAdditional.value || maxPages.value > 1) {
+    const confirmed = await confirm(
+      '爬取多个页面，需要分批处理',
+      `将爬取最多 ${maxPages.value} 个页面，深度 ${maxDepth.value}。\n\n` +
+      `由于 Embedding API 限制，系统将自动分批处理文本片段（每批最多 25 个）。\n\n` +
+      `这可能需要一些时间，是否继续？`
+    )
+    if (!confirmed) return
+  }
   
   scraping.value = true
   try {
-    // 显示进度提示
     scrapeError.value = crawlAdditional.value ? '正在爬取网页及额外链接，这可能需要一些时间...' : '正在爬取网页...'
     
     await knowledgeBaseApi.scrapeWebContent(id, {
@@ -143,7 +192,6 @@ async function onScrape() {
       max_depth: maxDepth.value,
     })
     
-    // 清除进度提示
     scrapeError.value = null
     scrapeUrl.value = ''
     await refreshAll()
@@ -461,4 +509,33 @@ function fmtDate(s: string) {
       </div>
     </div>
   </section>
+
+  <Teleport to="body">
+    <div
+      v-if="showConfirmDialog"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      @click.self="onConfirmCancel"
+    >
+      <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+        <h3 class="text-lg font-semibold text-slate-900">{{ confirmTitle }}</h3>
+        <p class="mt-3 whitespace-pre-wrap text-sm text-slate-600">{{ confirmMessage }}</p>
+        <div class="mt-6 flex justify-end gap-3">
+          <button
+            class="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            type="button"
+            @click="onConfirmCancel"
+          >
+            取消
+          </button>
+          <button
+            class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+            type="button"
+            @click="onConfirmOk"
+          >
+            确认
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
