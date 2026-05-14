@@ -3,7 +3,39 @@ import type { ChatRole } from './types'
 export type ChatSessionMessage = {
   role: Extract<ChatRole, 'system' | 'user' | 'assistant' | 'tool'>
   content: string
-  meta?: Record<string, unknown>
+  meta?: Record<string, unknown> & {
+    // ReAct 流程相关字段
+    react_steps?: Array<{
+      phase: 'thought' | 'action' | 'observation' | 'final'
+      round?: number
+      data: Record<string, unknown>
+      content?: string
+      at: number
+    }>
+    current_phase?: 'thought' | 'action' | 'observation' | 'final'
+    current_round?: number
+    
+    // 工具调用日志
+    tool_calls_log?: Array<{
+      type: 'call' | 'result'
+      round: number
+      data: Record<string, unknown>
+      at: number
+    }>
+    
+    // 对比模式字段
+    raw_content?: string | null
+    _rawLoading?: boolean
+    
+    // 其他元数据
+    event?: string
+    phase?: string
+    round?: number
+    tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown }>
+    tool_results?: Array<Record<string, unknown>>
+    thought?: string
+    [key: string]: unknown
+  }
   at: number
 }
 

@@ -80,6 +80,7 @@ let rawLlmAbort: AbortController | null = null  // 原始LLM流式请求控制�
 let rawLlmStreamContent = ''  // 原始LLM流式累积内容
 let currentToolCallsLog: Array<{type: 'call' | 'result'; round: number; data: Record<string, unknown>; at: number}> = []  // 当前轮工具调用日志
 const expandedToolLogs = ref(new Set<string>())  // 展开状态的工具日志（key = message.at）
+const reactSteps = ref<Array<{phase: 'thought' | 'action' | 'observation' | 'final'; round?: number; data: Record<string, unknown>; content?: string; at: number}>>([])  // ReAct 流程步骤
 
 function toggleToolLog(m: { at: number }) {
   const key = String(m.at)
@@ -303,9 +304,10 @@ async function send() {
 
       // ── 对比模式：并行发起独立的原始 LLM 流式请求（SSE）──
       const modelId = selectedAgent.value?.model_id ?? null
-  rawLlmContent.value = null
+      rawLlmContent.value = null
       rawLlmStreamContent = ''
       currentToolCallsLog = []  // 重置工具调用日志
+      reactSteps.value = []  // 重置 ReAct 流程步骤
       if (compareMode.value && modelId) {
         rawLlmAbort = new AbortController()
         
@@ -390,6 +392,202 @@ async function send() {
                 return
               }
 
+              // ━━━ ReAct Thought 阶段 ━━━
+              if (event === 'thought') {
+                const payload = JSON.parse(data) as {
+                  round?: number
+                  status?: string
+                  message?: string
+                }
+                
+                // 记录 ReAct 步骤
+                reactSteps.value.push({
+                  phase: 'thought',
+                  round: payload.round,
+                  data: payload,
+                  at: Date.now(),
+                })
+
+                const cur = activeSession.value
+                if (!cur) return
+                
+                // 更新当前 assistant 消息的 meta，嵌入 ReAct 流程信息
+                const msgs = cur.messages.slice()
+                let idx = msgs.length - 1
+                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                if (idx >= 0 && msgs[idx]) {
+                  const last = msgs[idx]
+                  msgs[idx] = {
+                    ...last,
+                    meta: {
+                      ...(last.meta as Record<string, unknown>),
+                      react_steps: [...reactSteps.value],
+                      current_phase: 'thought',
+                      current_round: payload.round,
+                      tool_calls_log: [...currentToolCallsLog],
+                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                    },
+                  }
+                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                }
+                return
+              }
+
+              // ━━━ ReAct Action 阶段 ━━━
+              if (event === 'action') {
+                const payload = JSON.parse(data) as {
+                  round?: number
+                  thought?: string
+                  tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown }>
+                }
+                
+                // 记录 ReAct 步骤
+                reactSteps.value.push({
+                  phase: 'action',
+                  round: payload.round,
+                  data: payload,
+                  content: payload.thought,
+                  at: Date.now(),
+                })
+
+                // 收集到工具调用日志
+                const toolRound = typeof payload.round === 'number' ? payload.round : reactSteps.value.length
+                const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls : []
+                
+                const logEntry = { 
+                  type: 'call' as const, 
+                  round: toolRound, 
+                  data: { tool_calls: toolCalls }, 
+                  at: Date.now() 
+                }
+                currentToolCallsLog.push(logEntry)
+
+                const cur = activeSession.value
+                if (!cur) return
+
+                // 更新 assistant 消息 meta
+                const msgs = cur.messages.slice()
+                let idx = msgs.length - 1
+                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                if (idx >= 0 && msgs[idx]) {
+                  const last = msgs[idx]
+                  msgs[idx] = {
+                    ...last,
+                    meta: {
+                      ...(last.meta as Record<string, unknown>),
+                      react_steps: [...reactSteps.value],
+                      current_phase: 'action',
+                      current_round: payload.round,
+                      tool_calls_log: [...currentToolCallsLog],
+                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                    },
+                  }
+                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                }
+
+                // 同时保留独立工具消息（用于可视化展示）
+                const lines = toolCalls.map((c) => {
+                  const name = typeof c.name === 'string' ? c.name : '(unknown)'
+                  const args = c.arguments ?? {}
+                  return `- ${name} ${formatJson(args)}`
+                })
+
+                const actionMsg = {
+                  role: 'tool' as const,
+                  content: `🔧 **Action** (第 ${payload.round ?? toolRound} 轮)\n${lines.join('\n')}`.trim(),
+                  meta: { 
+                    event: 'react_action', 
+                    phase: 'action',
+                    round: payload.round ?? toolRound, 
+                    tool_calls: toolCalls,
+                    thought: payload.thought,
+                  } as Record<string, unknown>,
+                  at: Date.now(),
+                }
+
+                setSession(
+                  { ...cur, updatedAt: Date.now(), messages: [...cur.messages, actionMsg] },
+                  { resetIfStarted: false },
+                )
+                return
+              }
+
+              // ━━━ ReAct Observation 阶段 ━━━
+              if (event === 'observation') {
+                const payload = JSON.parse(data) as {
+                  round?: number
+                  tool_results?: Array<Record<string, unknown>>
+                }
+                
+                // 记录 ReAct 步骤
+                reactSteps.value.push({
+                  phase: 'observation',
+                  round: payload.round,
+                  data: payload,
+                  at: Date.now(),
+                })
+
+                // 收集工具结果到日志
+                const toolResults = Array.isArray(payload.tool_results) ? payload.tool_results : []
+                for (const tr of toolResults) {
+                  currentToolCallsLog.push({ 
+                    type: 'result' as const, 
+                    round: payload.round ?? reactSteps.value.length, 
+                    data: { ...tr }, 
+                    at: Date.now() 
+                  })
+                }
+
+                const cur = activeSession.value
+                if (!cur) return
+
+                // 更新 assistant 消息 meta
+                const msgs = cur.messages.slice()
+                let idx = msgs.length - 1
+                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                if (idx >= 0 && msgs[idx]) {
+                  const last = msgs[idx]
+                  msgs[idx] = {
+                    ...last,
+                    meta: {
+                      ...(last.meta as Record<string, unknown>),
+                      react_steps: [...reactSteps.value],
+                      current_phase: 'observation',
+                      current_round: payload.round,
+                      tool_calls_log: [...currentToolCallsLog],
+                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                    },
+                  }
+                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                }
+
+                // 保留独立的观察结果消息
+                const obsLines = toolResults.map((tr) => {
+                  const name = (tr as Record<string, unknown>).tool_name ?? '(unknown)'
+                  const output = formatJson((tr as Record<string, unknown>).output ?? {})
+                  return `**${name}**: ${output.slice(0, 200)}${output.length > 200 ? '...' : ''}`
+                })
+
+                const obsMsg = {
+                  role: 'tool' as const,
+                  content: `👁️ **Observation** (第 ${payload.round ?? '?'} 轮)\n${obsLines.join('\n\n')}`.trim(),
+                  meta: { 
+                    event: 'react_observation', 
+                    phase: 'observation',
+                    round: payload.round,
+                    tool_results: toolResults,
+                  } as Record<string, unknown>,
+                  at: Date.now(),
+                }
+
+                setSession(
+                  { ...cur, updatedAt: Date.now(), messages: [...cur.messages, obsMsg] },
+                  { resetIfStarted: false },
+                )
+                return
+              }
+
+              // 兼容旧的 tool_call 事件（如果后端仍发送）
               if (event === 'tool_call') {
                 const payload = JSON.parse(data) as {
                   tool_round?: number
@@ -500,6 +698,14 @@ async function send() {
                 const finalContent = typeof payload.content === 'string' ? payload.content : ''
                 const cur = activeSession.value
                 if (!cur) return
+                
+                // 标记 ReAct 循环完成
+                reactSteps.value.push({
+                  phase: 'final',
+                  data: { content: finalContent },
+                  at: Date.now(),
+                })
+                
                 const msgs = cur.messages.slice()
                 let idx = msgs.length - 1
                 while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
@@ -515,6 +721,9 @@ async function send() {
                     content: finalContent,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
+                      react_steps: [...reactSteps.value],
+                      current_phase: 'final',
+                      tool_calls_log: [...currentToolCallsLog],
                       raw_content: rawLlmContent.value ?? existingRaw ?? '',
                       _rawLoading: !rawLlmContent.value && compareMode.value,
                     },
@@ -792,38 +1001,125 @@ watch(
             class="flex"
             :class="m.role === 'user' ? 'justify-end' : 'justify-start'"
           >
-            <!-- 工具消息：默认可折叠 -->
+            <!-- 工具消息：ReAct 流程可视化 -->
             <details
               v-if="m.role === 'tool'"
-              class="group max-w-[85%] rounded-2xl border border-amber-200 bg-amber-50"
+              class="group max-w-[85%] rounded-2xl border overflow-hidden"
+              :class="
+                (m.meta as Record<string, unknown>)?.event === 'react_action' 
+                  ? 'border-blue-200 bg-blue-50/80' 
+                  : (m.meta as Record<string, unknown>)?.event === 'react_observation'
+                    ? 'border-green-200 bg-green-50/80'
+                    : 'border-amber-200 bg-amber-50'
+              "
               :open="false"
             >
               <summary
-                class="cursor-pointer select-none rounded-2xl px-4 py-3 font-mono text-xs text-amber-900 hover:bg-amber-100"
+                class="cursor-pointer select-none rounded-2xl px-4 py-3 font-mono text-xs hover:opacity-90 transition-opacity"
+                :class="
+                  (m.meta as Record<string, unknown>)?.event === 'react_action'
+                    ? 'text-blue-900 hover:bg-blue-100'
+                    : (m.meta as Record<string, unknown>)?.event === 'react_observation'
+                      ? 'text-green-900 hover:bg-green-100'
+                      : 'text-amber-900 hover:bg-amber-100'
+                "
               >
                 <span class="inline-flex items-center gap-2">
-                  <svg
-                    class="h-3 w-3 transition-transform group-open:rotate-90"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      d="M9 5l7 7-7 7"
-                    />
-                  </svg>
-                  <span v-if="m.content.startsWith('【工具调用】')">工具调用</span>
-                  <span v-else-if="m.content.startsWith('【工具结果】')">工具结果</span>
-                  <span v-else>工具信息</span>
+                  <!-- ReAct 阶段图标 -->
+                  <template v-if="(m.meta as Record<string, unknown>)?.event === 'react_action'">
+                    <svg class="h-4 w-4 text-blue-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    <span class="font-bold">Action 第 {{ (m.meta as Record<string, unknown>).round ?? '?' }} 轮</span>
+                    <span class="rounded-full bg-blue-200 px-1.5 py-0.5 text-[10px] font-semibold text-blue-800">
+                      {{ (((m.meta as Record<string, unknown>).tool_calls as Array<unknown>)?.length ?? 0) }} 个工具调用
+                    </span>
+                  </template>
+                  <template v-else-if="(m.meta as Record<string, unknown>)?.event === 'react_observation'">
+                    <svg class="h-4 w-4 text-green-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                    <span class="font-bold">Observation 第 {{ (m.meta as Record<string, unknown>).round ?? '?' }} 轮</span>
+                    <span class="rounded-full bg-green-200 px-1.5 py-0.5 text-[10px] font-semibold text-green-800">
+                      {{ (((m.meta as Record<string, unknown>).tool_results as Array<unknown>)?.length ?? 0) }} 个结果
+                    </span>
+                  </template>
+                  <template v-else-if="m.content.startsWith('【工具调用】')">
+                    <svg class="h-3 w-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span>工具调用</span>
+                  </template>
+                  <template v-else-if="m.content.startsWith('【工具结果】')">
+                    <svg class="h-3 w-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span>工具结果</span>
+                  </template>
+                  <template v-else>
+                    <svg class="h-3 w-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span>工具信息</span>
+                  </template>
                 </span>
               </summary>
               <div
-                class="whitespace-pre-wrap border-t border-amber-200 px-4 py-3 font-mono text-xs text-amber-900"
+                class="whitespace-pre-wrap border-t px-4 py-3 font-mono text-xs max-h-[300px] overflow-auto"
+                :class="
+                  (m.meta as Record<string, unknown>)?.event === 'react_action'
+                    ? 'border-blue-200 text-blue-900 bg-white/60'
+                    : (m.meta as Record<string, unknown>)?.event === 'react_observation'
+                      ? 'border-green-200 text-green-900 bg-white/60'
+                      : 'border-amber-200 text-amber-900'
+                "
               >
-                {{ m.content }}
+                <!-- Action 详情：展示思考内容 + 工具调用列表 -->
+                <template v-if="(m.meta as Record<string, unknown>)?.event === 'react_action'">
+                  <div v-if="(m.meta as Record<string, unknown>)?.thought" class="mb-3 p-2 rounded-lg bg-blue-100/50 text-blue-800">
+                    <div class="text-[10px] font-semibold uppercase tracking-wide mb-1 text-blue-600">💭 思考</div>
+                    <div class="whitespace-normal">{{ ((m.meta as Record<string, unknown>).thought as string).slice(0, 500) }}</div>
+                  </div>
+                  <div class="space-y-2">
+                    <div 
+                      v-for="(tc, tcIdx) in ((m.meta as Record<string, unknown>).tool_calls as Array<{name?: string; arguments?: unknown}>)" 
+                      :key="tcIdx"
+                      class="rounded-lg bg-blue-100/80 p-2"
+                    >
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="rounded bg-blue-300 px-1.5 py-0.5 text-[10px] font-bold text-blue-900">
+                          {{ tc.name ?? 'unknown' }}
+                        </span>
+                      </div>
+                      <pre class="text-[11px] text-blue-700 whitespace-pre-wrap">{{ formatJson(tc.arguments) }}</pre>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Observation 详情：展示工具执行结果 -->
+                <template v-else-if="(m.meta as Record<string, unknown>)?.event === 'react_observation'">
+                  <div class="space-y-2">
+                    <div 
+                      v-for="(tr, trIdx) in ((m.meta as Record<string, unknown>).tool_results as Array<Record<string, unknown>>)" 
+                      :key="trIdx"
+                      class="rounded-lg bg-green-100/80 p-2"
+                    >
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="rounded-full bg-green-300 px-1.5 py-0.5 text-[10px] font-bold text-green-900">
+                          ✓ {{ tr.tool_name ?? 'result' }}
+                        </span>
+                        <span class="text-[10px] text-green-700">第 {{ tr.tool_round ?? '?' }} 轮</span>
+                      </div>
+                      <pre class="max-h-[150px] overflow-auto text-[10px] text-green-800 whitespace-pre-wrap">{{ formatJson(tr.output) }}</pre>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- 兼容旧格式 -->
+                <template v-else>
+                  {{ m.content }}
+                </template>
               </div>
             </details>
 
@@ -969,7 +1265,60 @@ watch(
                     </div>
 
                     <!-- 最终回答内容区 -->
-                    <div class="max-h-[500px] flex-1 overflow-auto p-4 text-sm leading-relaxed text-slate-800 prose prose-sm prose-slate max-w-none shadow-sm" v-html="renderMarkdown(m.content)"></div>
+                    <div class="relative max-h-[500px] flex-1 overflow-auto p-4 text-sm leading-relaxed text-slate-800 prose prose-sm prose-slate max-w-none shadow-sm" v-html="renderMarkdown(m.content)"></div>
+                    
+                    <!-- ReAct 流程状态指示器 -->
+                    <div 
+                      v-if="(m.meta as Record<string, unknown>)?.react_steps && (((m.meta as Record<string, unknown>).react_steps as Array<Record<string, unknown>>)?.length ?? 0) > 0" 
+                      class="mx-4 mb-3 rounded-lg bg-gradient-to-r from-indigo-50 via-purple-50 to-emerald-50 border border-indigo-100 p-3"
+                    >
+                      <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2 text-xs font-semibold text-indigo-700">
+                          <svg class="h-4 w-4 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                          ReAct 循环
+                        </div>
+                        <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-600">
+                          {{ ((m.meta as Record<string, unknown>).react_steps as Array<Record<string, unknown>>).filter((s: Record<string, unknown>) => s.phase !== 'final').length }} 轮
+                        </span>
+                      </div>
+                      
+                      <!-- ReAct 阶段进度条 -->
+                      <div class="flex items-center gap-1 text-[10px] text-indigo-600 overflow-x-auto pb-1">
+                        <template v-for="(step, stepIdx) in ((m.meta as Record<string, unknown>).react_steps as Array<{phase?: string; round?: number}>)" :key="stepIdx">
+                          <span 
+                            class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded whitespace-nowrap"
+                            :class="
+                              step.phase === 'thought' ? 'bg-blue-100 text-blue-700' :
+                              step.phase === 'action' ? 'bg-violet-100 text-violet-700' :
+                              step.phase === 'observation' ? 'bg-emerald-100 text-emerald-700' :
+                              'bg-gray-100 text-gray-600'
+                            "
+                          >
+                            <template v-if="step.phase === 'thought'">🧠 T{{ step.round }}</template>
+                            <template v-else-if="step.phase === 'action'">⚡ A{{ step.round }}</template>
+                            <template v-else-if="step.phase === 'observation'">👁️ O{{ step.round }}</template>
+                            <template v-else>✅ Done</template>
+                          </span>
+                          <span v-if="stepIdx < (((m.meta as Record<string, unknown>).react_steps as Array<unknown>)?.length ?? 0) - 1" class="text-indigo-300">→</span>
+                        </template>
+                      </div>
+                      
+                      <!-- 当前阶段高亮 -->
+                      <div v-if="(m.meta as Record<string, unknown>)?.current_phase && (m.meta as Record<string, unknown>).current_phase !== 'final'" class="mt-2 flex items-center gap-1.5 text-xs">
+                        <span class="animate-pulse">⏳</span>
+                        <span class="font-medium" :class="
+                          (m.meta as Record<string, unknown>)?.current_phase === 'thought' ? 'text-blue-600' :
+                          (m.meta as Record<string, unknown>)?.current_phase === 'action' ? 'text-violet-600' :
+                          'text-emerald-600'
+                        ">
+                          {{ (m.meta as Record<string, unknown>)?.current_phase === 'thought' ? '思考中...' :
+                             (m.meta as Record<string, unknown>)?.current_phase === 'action' ? '执行工具...' :
+                             '观察结果...' }}
+                        </span>
+                      </div>
+                    </div>
                     
                     <!-- 流式中指示器 -->
                     <div v-if="sending && !m.content" class="mx-4 mb-2 flex items-center gap-1 text-xs text-emerald-400">
