@@ -3,6 +3,16 @@ import axios, { AxiosError } from 'axios'
 import { clearAuthStorage, readAuthStorage, writeAuthStorage } from './authStorage'
 import type { ApiResponse, TokenResponse } from './types'
 
+async function resetAuthState() {
+  clearAuthStorage()
+  try {
+    const { useAuthStore } = await import('@/stores/auth')
+    useAuthStore().clear()
+  } catch {
+    // store 尚未初始化时忽略
+  }
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:9000'
 
 export const http = axios.create({
@@ -54,7 +64,7 @@ http.interceptors.response.use(
     try {
       const token = await refreshToken()
       if (!token) {
-        clearAuthStorage()
+        await resetAuthState()
         throw error
       }
 
@@ -71,7 +81,7 @@ http.interceptors.response.use(
       originalRequest.headers.Authorization = `Bearer ${token.access_token}`
       return http(originalRequest)
     } catch {
-      clearAuthStorage()
+      await resetAuthState()
       throw error
     }
   },

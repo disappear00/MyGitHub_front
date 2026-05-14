@@ -133,6 +133,16 @@ router.beforeEach(async (to) => {
     await auth.refreshPermissions()
   }
 
+  // 权限加载过程中 Token 可能已失效（refresh 失败导致 store 被清空），需要重新判断登录状态
+  if (!auth.isAuthed) {
+    const requiresAuth = Boolean(to.meta.requiresAuth)
+    if (requiresAuth) {
+      return { name: 'login', query: { redirect: to.fullPath } }
+    }
+    // 未登录且不需要认证的页面直接放行
+    return true
+  }
+
   const requiresAuth = Boolean(to.meta.requiresAuth)
   if (requiresAuth && !auth.isAuthed) {
     return { name: 'login', query: { redirect: to.fullPath } }
