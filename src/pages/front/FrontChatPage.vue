@@ -76,6 +76,21 @@ const agentStreaming = ref(true)
 const compareMode = ref(false)
 const rawLlmContent = ref<string | null>(null)
 let agentAbort: AbortController | null = null
+let rawLlmAbort: AbortController | null = null  // 原始LLM流式请求控制器
+let rawLlmStreamContent = ''  // 原始LLM流式累积内容
+let currentToolCallsLog: Array<{type: 'call' | 'result'; round: number; data: Record<string, unknown>; at: number}> = []  // 当前轮工具调用日志
+const expandedToolLogs = ref(new Set<string>())  // 展开状态的工具日志（key = message.at）
+
+function toggleToolLog(m: { at: number }) {
+  const key = String(m.at)
+  const next = new Set(expandedToolLogs.value)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+  }
+  expandedToolLogs.value = next
+}
 
 const activeSession = computed<ChatSession | null>(() => {
   const id = activeSessionId.value
@@ -219,6 +234,8 @@ async function send() {
   input.value = ''
   agentAbort?.abort()
   agentAbort = null
+  rawLlmAbort?.abort()
+  rawLlmAbort = null
 
   const now = Date.now()
   const userMsg = { role: 'user' as const, content, at: now }
@@ -284,27 +301,61 @@ async function send() {
       agentAbort = new AbortController()
       let out = ''
 
-      // ── 对比模式：并行发起独立的原始 LLM 请求（结果写入 rawLlmContent ref）──
+      // ── 对比模式：并行发起独立的原始 LLM 流式请求（SSE）──
       const modelId = selectedAgent.value?.model_id ?? null
-      rawLlmContent.value = null  // 重置
+  rawLlmContent.value = null
+      rawLlmStreamContent = ''
+      currentToolCallsLog = []  // 重置工具调用日志
       if (compareMode.value && modelId) {
-        aiModelApi.chat(modelId, {
-          messages: [{ role: 'user', content }],
-        }).then((res) => {
-          rawLlmContent.value = res.content
-          // 实时更新当前 assistant 消息的 raw_content（不等 SSE 结束）
-          const cur = activeSession.value
-          if (cur) {
-            const msgs = cur.messages.slice()
-            let idx = msgs.length - 1
-            while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
-            if (idx >= 0 && msgs[idx]) {
-              const last = msgs[idx]
-              msgs[idx] = { ...last, meta: { ...(last.meta as Record<string, unknown>), raw_content: res.content, _rawLoading: false } }
-              setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
-            }
+        rawLlmAbort = new AbortController()
+        
+        // 使用 SSE 流式请求原始 LLM
+        sseJsonPost(
+          `/api/v1/models/${modelId}/chat?stream=true`,
+          { messages: [{ role: 'user', content }] },
+          {
+            signal: rawLlmAbort.signal,
+            onData: (delta) => {
+              // 累积流式内容并实时更新UI
+              rawLlmStreamContent += delta
+              rawLlmContent.value = rawLlmStreamContent
+              
+              const cur = activeSession.value
+              if (cur) {
+                const msgs = cur.messages.slice()
+                let idx = msgs.length - 1
+                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                if (idx >= 0 && msgs[idx]) {
+                  const last = msgs[idx]
+                  msgs[idx] = { 
+                    ...last, 
+                    meta: { 
+                      ...(last.meta as Record<string, unknown>), 
+                      raw_content: rawLlmStreamContent, 
+                      _rawLoading: false 
+                    } 
+                  }
+                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                }
+              }
+            },
+            onError: (err) => {
+              console.error('Raw LLM stream error:', err)
+              // 标记加载结束，即使出错也显示已有内容
+              const cur = activeSession.value
+              if (cur) {
+                const msgs = cur.messages.slice()
+                let idx = msgs.length - 1
+                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                if (idx >= 0 && msgs[idx]) {
+                  const last = msgs[idx]
+                  msgs[idx] = { ...last, meta: { ...(last.meta as Record<string, unknown>), _rawLoading: false } }
+                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                }
+              }
+            },
           }
-        }).catch(() => {})
+        ).catch(() => {})
       }
 
       // ── Agent SSE 主请求（不再携带 compare 参数）──
@@ -347,6 +398,31 @@ async function send() {
                 const toolRound = typeof payload.tool_round === 'number' ? payload.tool_round : 0
                 const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls : []
 
+                // 收集到工具调用日志（用于对比模式Agent栏内展示）
+                const logEntry = { type: 'call' as const, round: toolRound, data: { tool_calls: toolCalls }, at: Date.now() }
+                currentToolCallsLog.push(logEntry)
+
+                // 更新当前 assistant 消息的 meta，嵌入工具调用信息
+                const cur = activeSession.value
+                if (cur) {
+                  const msgs = cur.messages.slice()
+                  let idx = msgs.length - 1
+                  while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                  if (idx >= 0 && msgs[idx]) {
+                    const last = msgs[idx]
+                    msgs[idx] = {
+                      ...last,
+                      meta: {
+                        ...(last.meta as Record<string, unknown>),
+                        tool_calls_log: [...currentToolCallsLog],
+                        _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                      },
+                    }
+                    setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                  }
+                }
+
+                // 同时保留独立工具消息（普通模式使用）
                 const lines = toolCalls.map((c) => {
                   const name = typeof c.name === 'string' ? c.name : '(unknown)'
                   const args = c.arguments ?? {}
@@ -360,7 +436,6 @@ async function send() {
                   at: Date.now(),
                 }
 
-                const cur = activeSession.value
                 if (!cur) return
                 setSession(
                   { ...cur, updatedAt: Date.now(), messages: [...cur.messages, toolMsg] },
@@ -379,6 +454,31 @@ async function send() {
                 }
                 const toolRound = typeof payload.tool_round === 'number' ? payload.tool_round : 0
                 const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '(unknown)'
+
+                // 收集到工具调用日志
+                currentToolCallsLog.push({ type: 'result' as const, round: toolRound, data: { ...payload }, at: Date.now() })
+
+                // 更新当前 assistant 消息的 meta
+                const cur = activeSession.value
+                if (cur) {
+                  const msgs = cur.messages.slice()
+                  let idx = msgs.length - 1
+                  while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                  if (idx >= 0 && msgs[idx]) {
+                    const last = msgs[idx]
+                    msgs[idx] = {
+                      ...last,
+                      meta: {
+                        ...(last.meta as Record<string, unknown>),
+                        tool_calls_log: [...currentToolCallsLog],
+                        _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                      },
+                    }
+                    setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                  }
+                }
+
+                // 同时保留独立工具消息（普通模式使用）
                 const outText = formatJson(payload.output ?? {})
                 const toolMsg = {
                   role: 'tool' as const,
@@ -387,7 +487,6 @@ async function send() {
                   at: Date.now(),
                 }
 
-                const cur = activeSession.value
                 if (!cur) return
                 setSession(
                   { ...cur, updatedAt: Date.now(), messages: [...cur.messages, toolMsg] },
@@ -761,13 +860,13 @@ watch(
                       <span class="shrink-0 text-xs text-slate-400">{{ ((m.meta as Record<string, unknown>).raw_content as string).length }} 字</span>
                     </div>
 
-                    <!-- 状态1：加载中 -->
+                    <!-- 状态1：加载中 / 流式中 -->
                     <template v-if="(m.meta as Record<string, unknown>)?._rawLoading">
                       <div class="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-slate-400">
                         <svg class="h-8 w-8 animate-spin text-rose-300" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" /><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
                         <div class="text-center">
-                          <div class="text-xs font-medium text-rose-500">原始 LLM 响应中</div>
-                          <div class="mt-1 text-xs text-slate-300">正在调用 {{ selectedAgent?.model_id ? (modelNameById.get(selectedAgent.model_id) ?? '绑定模型') : 'LLM' }} 接口…</div>
+                          <div class="text-xs font-medium text-rose-500">原始 LLM 流式输出中</div>
+                          <div class="mt-1 text-xs text-slate-300">{{ ((m.meta as Record<string, unknown>).raw_content as string).length || 0 }} 字已生成…</div>
                         </div>
                       </div>
                     </template>
@@ -790,8 +889,15 @@ watch(
                           </span>
                         </div>
                       </div>
-                      <!-- 内容区 -->
-                      <div class="max-h-[500px] flex-1 overflow-auto p-4 text-sm leading-relaxed prose prose-sm prose-slate max-w-none" v-html="renderMarkdown((m.meta as Record<string, unknown>).raw_content as string)"></div>
+                      <!-- 内容区 - 流式显示支持 -->
+                      <div class="max-h-[500px] flex-1 overflow-auto p-4 text-sm leading-relaxed prose prose-sm prose-slate max-w-none" 
+                           v-html="renderMarkdown((m.meta as Record<string, unknown>).raw_content as string)"></div>
+                      <!-- 流式光标指示器 -->
+                      <div v-if="(m.meta as Record<string, unknown>)?._rawLoading && (m.meta as Record<string, unknown>)?.raw_content" 
+                           class="mx-4 mb-2 flex items-center gap-1 text-xs text-rose-400">
+                        <span class="inline-block h-3 w-0.5 animate-pulse bg-rose-400"></span>
+                        正在输出…
+                      </div>
                     </template>
                   </div>
                   <!-- 右：Agent 编排输出 -->
@@ -804,9 +910,72 @@ watch(
                         </span>
                         <span class="text-xs text-slate-400">RAG + 工具 + 整合</span>
                       </div>
-                      <span class="shrink-0 text-xs text-slate-400">{{ m.content.length }} 字</span>
+                      <div class="flex items-center gap-2">
+                        <span v-if="(m.meta as Record<string, unknown>)?.tool_calls_log && ((m.meta as Record<string, unknown>).tool_calls_log as Array<Record<string, unknown>>).length > 0" 
+                              class="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+                          <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                          {{ (((m.meta as Record<string, unknown>).tool_calls_log as Array<Record<string, unknown>>)?.filter((t: Record<string, unknown>) => t.type === 'call')?.length ?? 0) }} 次工具调用
+                        </span>
+                        <span class="shrink-0 text-xs text-slate-400">{{ m.content.length }} 字</span>
+                      </div>
                     </div>
+
+                    <!-- 工具调用流程展示区 -->
+                    <div v-if="(m.meta as Record<string, unknown>)?.tool_calls_log && ((m.meta as Record<string, unknown>).tool_calls_log as Array<Record<string, unknown>>).length > 0"
+                         class="border-b border-emerald-100">
+                      <button 
+                        @click="toggleToolLog(m)"
+                        class="flex w-full items-center justify-between px-4 py-2 text-left text-xs font-medium text-emerald-600 hover:bg-emerald-100/50 transition-colors">
+                        <span class="flex items-center gap-1.5">
+                          <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                          工具调用流程
+                        </span>
+                        <svg :class="['h-3.5 w-3.5 transition-transform', expandedToolLogs.has(`${m.at}`) ? 'rotate-180' : '']" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                      </button>
+                      
+                      <!-- 展开的工具调用详情 -->
+                      <div v-show="expandedToolLogs.has(`${m.at}`)" class="max-h-[300px] overflow-auto bg-emerald-900/5 p-3 space-y-2">
+                        <template v-for="(log, logIdx) in ((m.meta as Record<string, unknown>).tool_calls_log as Array<{type: string; round: number; data: Record<string, unknown>}>)" :key="logIdx">
+                          <!-- 工具调用卡片 -->
+                          <div v-if="log.type === 'call'" 
+                               class="rounded-lg border border-blue-200 bg-blue-50/80 px-3 py-2">
+                            <div class="mb-1 flex items-center gap-2">
+                              <span class="inline-flex items-center rounded bg-blue-200 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">
+                                调用 #{{ log.round }}
+                              </span>
+                            </div>
+                            <div class="space-y-1">
+                              <div v-for="(tc, tcIdx) in ((log.data as Record<string, unknown>).tool_calls as Array<{name?: string; arguments?: unknown}>)" :key="tcIdx"
+                                   class="rounded bg-white/60 px-2 py-1.5 font-mono text-[11px] text-slate-700">
+                                <span class="font-semibold text-blue-700">{{ tc.name ?? 'unknown' }}</span>
+                                <span v-if="tc.arguments" class="text-slate-500 ml-1">{{ formatJson(tc.arguments) }}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- 工具结果卡片 -->
+                          <div v-if="log.type === 'result'" 
+                               class="rounded-lg border border-green-200 bg-green-50/80 px-3 py-2">
+                            <div class="mb-1 flex items-center gap-2">
+                              <span class="inline-flex items-center rounded bg-green-200 px-1.5 py-0.5 text-[10px] font-bold text-green-800">
+                                结果 #{{ log.round }}
+                              </span>
+                              <span class="text-[11px] font-medium text-green-700">{{ (log.data as Record<string, unknown>).tool_name ?? '' }}</span>
+                            </div>
+                            <pre class="max-h-[120px] overflow-auto rounded bg-white/60 p-2 font-mono text-[10px] text-slate-600 whitespace-pre-wrap">{{ formatJson((log.data as Record<string, unknown>).output) }}</pre>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+
+                    <!-- 最终回答内容区 -->
                     <div class="max-h-[500px] flex-1 overflow-auto p-4 text-sm leading-relaxed text-slate-800 prose prose-sm prose-slate max-w-none shadow-sm" v-html="renderMarkdown(m.content)"></div>
+                    
+                    <!-- 流式中指示器 -->
+                    <div v-if="sending && !m.content" class="mx-4 mb-2 flex items-center gap-1 text-xs text-emerald-400">
+                      <svg class="h-3 w-3 animate-spin text-emerald-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                      <span>Agent 思考中…</span>
+                    </div>
                   </div>
                 </div>
                 <!-- 对比差异摘要 -->
