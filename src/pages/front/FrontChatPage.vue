@@ -516,8 +516,69 @@ async function send() {
               if (event === 'observation') {
                 const payload = JSON.parse(data) as {
                   round?: number
+                  status?: string  // 'analyzing' | 'complete'
+                  message?: string
+                  content?: string  // LLM 的观察/分析内容
+                  raw_results_count?: number
                   tool_results?: Array<Record<string, unknown>>
+                  tool_summary?: Array<{name?: string; success?: boolean}>
                 }
+                
+                // 如果是"正在分析"的中间状态，只更新 UI 状态
+                if (payload.status === 'analyzing' || !payload.status || !payload.content) {
+                  reactSteps.value.push({
+                    phase: 'observation',
+                    round: payload.round,
+                    data: payload,
+                    at: Date.now(),
+                  })
+
+                  const cur = activeSession.value
+                  if (cur) {
+                    const msgs = cur.messages.slice()
+                    let idx = msgs.length - 1
+                    while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                    if (idx >= 0 && msgs[idx]) {
+                      const last = msgs[idx]
+                      msgs[idx] = {
+                        ...last,
+                        meta: {
+                          ...(last.meta as Record<string, unknown>),
+                          react_steps: [...reactSteps.value],
+                          current_phase: 'observation',
+                          current_round: payload.round,
+                          tool_calls_log: [...currentToolCallsLog],
+                          _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                        },
+                      }
+                      setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                    }
+                  }
+                  
+                  // 显示"正在分析"的消息
+                  const analyzingMsg = {
+                    role: 'tool' as const,
+                    content: `👁️ **Observation** (第 ${payload.round ?? '?'} 轮)\n\n⏳ 正在分析工具执行结果...`,
+                    meta: { 
+                      event: 'react_observation', 
+                      phase: 'observation',
+                      status: 'analyzing',
+                      round: payload.round,
+                    } as Record<string, unknown>,
+                    at: Date.now(),
+                  }
+
+                  const analyzingCur = activeSession.value
+                  if (analyzingCur) {
+                    setSession(
+                      { ...analyzingCur, updatedAt: Date.now(), messages: [...analyzingCur.messages, analyzingMsg] },
+                      { resetIfStarted: false },
+                    )
+                  }
+                  return
+                }
+                
+                // ── status: 'complete' - LLM 分析完成，包含真正的洞察 ──
                 
                 // 记录 ReAct 步骤
                 reactSteps.value.push({
@@ -561,21 +622,34 @@ async function send() {
                   setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
                 }
 
-                // 保留独立的观察结果消息
-                const obsLines = toolResults.map((tr) => {
-                  const name = (tr as Record<string, unknown>).tool_name ?? '(unknown)'
-                  const output = formatJson((tr as Record<string, unknown>).output ?? {})
-                  return `**${name}**: ${output.slice(0, 200)}${output.length > 200 ? '...' : ''}`
-                })
+                // 构建完整的 Observation 消息（包含 LLM 的洞察）
+                let obsContent = `👁️ **Observation** (第 ${payload.round ?? '?'} 轮)\n\n`
+                
+                // 添加 LLM 的观察/分析内容（核心！）
+                if (payload.content) {
+                  obsContent += `### 🔍 **LLM 观察与分析**\n\n${payload.content}\n\n`
+                }
+                
+                // 工具执行摘要
+                if (Array.isArray(payload.tool_summary) && payload.tool_summary.length > 0) {
+                  obsContent += `### 📊 工具执行摘要\n\n`
+                  for (const ts of payload.tool_summary) {
+                    const icon = ts.success ? '✅' : '❌'
+                    obsContent += `${icon} ${ts.name ?? 'unknown'}\n`
+                  }
+                }
 
                 const obsMsg = {
                   role: 'tool' as const,
-                  content: `👁️ **Observation** (第 ${payload.round ?? '?'} 轮)\n${obsLines.join('\n\n')}`.trim(),
+                  content: obsContent.trim(),
                   meta: { 
                     event: 'react_observation', 
                     phase: 'observation',
+                    status: 'complete',
                     round: payload.round,
+                    observation_content: payload.content,  // LLM 的洞察内容
                     tool_results: toolResults,
+                    tool_summary: payload.tool_summary,
                   } as Record<string, unknown>,
                   at: Date.now(),
                 }
@@ -1097,22 +1171,75 @@ watch(
                   </div>
                 </template>
 
-                <!-- Observation 详情：展示工具执行结果 -->
+                <!-- Observation 详情：展示 LLM 的洞察 + 工具结果摘要 -->
                 <template v-else-if="(m.meta as Record<string, unknown>)?.event === 'react_observation'">
-                  <div class="space-y-2">
-                    <div 
-                      v-for="(tr, trIdx) in ((m.meta as Record<string, unknown>).tool_results as Array<Record<string, unknown>>)" 
-                      :key="trIdx"
-                      class="rounded-lg bg-green-100/80 p-2"
-                    >
-                      <div class="flex items-center gap-2 mb-1">
-                        <span class="rounded-full bg-green-300 px-1.5 py-0.5 text-[10px] font-bold text-green-900">
-                          ✓ {{ tr.tool_name ?? 'result' }}
-                        </span>
-                        <span class="text-[10px] text-green-700">第 {{ tr.tool_round ?? '?' }} 轮</span>
-                      </div>
-                      <pre class="max-h-[150px] overflow-auto text-[10px] text-green-800 whitespace-pre-wrap">{{ formatJson(tr.output) }}</pre>
+                  <!-- 正在分析状态 -->
+                  <div v-if="(m.meta as Record<string, unknown>)?.status === 'analyzing'" class="space-y-2">
+                    <div class="flex items-center gap-2 text-green-700 animate-pulse">
+                      <svg class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                      </svg>
+                      <span class="font-medium">正在分析工具执行结果...</span>
                     </div>
+                  </div>
+                  
+                  <!-- 分析完成状态（包含 LLM 洞察）-->
+                  <div v-else class="space-y-3">
+                    <!-- 🔍 LLM 观察与分析（核心内容）-->
+                    <div 
+                      v-if="(m.meta as Record<string, unknown>)?.observation_content" 
+                      class="rounded-lg bg-gradient-to-br from-emerald-50 to-green-50 border border-green-200 p-3"
+                    >
+                      <div class="flex items-center gap-2 mb-2 text-xs font-semibold text-green-700">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                        </svg>
+                        🔍 LLM 观察
+                      </div>
+                      <div class="text-sm text-green-900 whitespace-pre-wrap leading-relaxed">
+                        {{ ((m.meta as Record<string, unknown>).observation_content as string) }}
+                      </div>
+                    </div>
+                    
+                    <!-- 📊 工具执行摘要 -->
+                    <div 
+                      v-if="(m.meta as Record<string, unknown>)?.tool_summary && ((m.meta as Record<string, unknown>).tool_summary as Array<Record<string, unknown>>).length > 0"
+                    >
+                      <div class="text-[10px] font-semibold uppercase tracking-wide text-green-600 mb-1">📊 工具执行摘要</div>
+                      <div class="grid grid-cols-2 gap-1">
+                        <div 
+                          v-for="(ts, tsIdx) in ((m.meta as Record<string, unknown>).tool_summary as Array<{name?: string; success?: boolean}>)"
+                          :key="tsIdx"
+                          class="rounded px-2 py-1 text-[11px] flex items-center gap-1"
+                          :class="ts.success ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'"
+                        >
+                          <span>{{ ts.success ? '✅' : '❌' }}</span>
+                          <span class="truncate">{{ ts.name ?? 'unknown' }}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <!-- 📋 原始工具结果（可折叠详情）-->
+                    <details v-if="(m.meta as Record<string, unknown>)?.tool_results && ((m.meta as Record<string, unknown>).tool_results as Array<unknown>).length > 0" class="group">
+                      <summary class="cursor-pointer text-[10px] font-medium text-green-600 hover:text-green-800 select-none flex items-center gap-1">
+                        <svg class="h-3 w-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                        原始工具数据 ({{ ((m.meta as Record<string, unknown>).tool_results as Array<unknown>).length }} 个)
+                      </summary>
+                      <div class="mt-2 space-y-2 max-h-[200px] overflow-auto">
+                        <div 
+                          v-for="(tr, trIdx) in ((m.meta as Record<string, unknown>).tool_results as Array<Record<string, unknown>>)" 
+                          :key="trIdx"
+                          class="rounded-lg bg-white/80 p-2 border border-green-200"
+                        >
+                          <div class="flex items-center justify-between mb-1">
+                            <span class="text-[10px] font-bold text-green-800">{{ tr.tool_name ?? 'result' }}</span>
+                            <span class="text-[10px] text-green-600">#{{ tr.tool_round }}</span>
+                          </div>
+                          <pre class="max-h-[120px] overflow-auto text-[10px] text-green-800 whitespace-pre-wrap bg-white/60 rounded p-1.5">{{ formatJson(tr.output) }}</pre>
+                        </div>
+                      </div>
+                    </details>
                   </div>
                 </template>
 
@@ -1273,15 +1400,8 @@ watch(
                       class="mx-4 mb-3 rounded-lg bg-gradient-to-r from-indigo-50 via-purple-50 to-emerald-50 border border-indigo-100 p-3"
                     >
                       <div class="flex items-center justify-between mb-2">
-                        <div class="flex items-center gap-2 text-xs font-semibold text-indigo-700">
-                          <svg class="h-4 w-4 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                          </svg>
-                          ReAct 循环
-                        </div>
-                        <span class="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-600">
-                          {{ ((m.meta as Record<string, unknown>).react_steps as Array<Record<string, unknown>>).filter((s: Record<string, unknown>) => s.phase !== 'final').length }} 轮
-                        </span>
+
+
                       </div>
                       
                       <!-- ReAct 阶段进度条 -->

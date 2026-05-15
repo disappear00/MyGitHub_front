@@ -421,6 +421,9 @@ function fmtDate(s: string) {
               <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                 文件名
               </th>
+              <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 max-w-[300px]">
+                内容预览
+              </th>
               <th class="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                 状态
               </th>
@@ -436,11 +439,23 @@ function fmtDate(s: string) {
                 <div class="text-sm font-medium text-slate-900">{{ d.file_name }}</div>
                 <div class="text-xs text-slate-500">{{ d.source_type }}</div>
               </td>
+              <td class="px-4 py-3 max-w-[300px]">
+                <template v-if="d.content_text">
+                  <details class="group">
+                    <summary class="cursor-pointer text-xs text-emerald-700 hover:text-emerald-900 select-none flex items-center gap-1">
+                      <svg class="h-3 w-3 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+                      <span>{{ d.content_text.length > 0 ? `${Math.round(d.content_text.length / 100)} 字` : '空' }}</span>
+                    </summary>
+                    <pre class="mt-1 max-h-[200px] overflow-auto rounded-lg bg-slate-50 p-2 text-[11px] leading-relaxed text-slate-600 whitespace-pre-wrap">{{ d.content_text.slice(0, 2000) }}{{ d.content_text.length > 2000 ? `\n... (共 ${d.content_text.length} 字)` : '' }}</pre>
+                  </details>
+                </template>
+                <span v-else class="text-xs text-slate-400">无内容</span>
+              </td>
               <td class="px-4 py-3 text-sm text-slate-700">{{ d.status }}</td>
               <td class="px-4 py-3 text-sm text-slate-700">{{ fmtDate(d.updated_at) }}</td>
             </tr>
             <tr v-if="!loading && docs.length === 0">
-              <td class="px-4 py-8 text-center text-sm text-slate-500" colspan="4">暂无文档</td>
+              <td class="px-4 py-8 text-center text-sm text-slate-500" colspan="5">暂无文档</td>
             </tr>
           </tbody>
         </table>

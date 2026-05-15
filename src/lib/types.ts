@@ -178,6 +178,7 @@ export type KBDocumentResponse = {
   file_name: string
   source_type: string
   status: string
+  content_text?: string | null
   meta: Record<string, unknown>
   group_id: number
   created_by_user_id: number
