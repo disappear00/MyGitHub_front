@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { marked } from 'marked'
+import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { marked } from "marked";
 
-import { agentApi, aiModelApi, knowledgeBaseApi } from '@/lib/api'
-import { formatJson } from '@/lib/json'
+import { agentApi, aiModelApi, knowledgeBaseApi } from "@/lib/api";
+import { formatJson } from "@/lib/json";
 import {
   createChatSession,
   deleteChatSession,
@@ -11,353 +11,411 @@ import {
   saveChatSessions,
   upsertChatSession,
   type ChatSession,
-} from '@/lib/chatSessions'
-import { sseJsonPost } from '@/lib/sse'
-import type { AgentResponse, AIModelResponse, KnowledgeBaseResponse } from '@/lib/types'
-import { useAuthStore } from '@/stores/auth'
+} from "@/lib/chatSessions";
+import { sseJsonPost } from "@/lib/sse";
+import type {
+  AgentResponse,
+  AIModelResponse,
+  KnowledgeBaseResponse,
+} from "@/lib/types";
+import { useAuthStore } from "@/stores/auth";
 
-const auth = useAuthStore()
-auth.initFromStorage()
+const auth = useAuthStore();
+auth.initFromStorage();
 
 function renderMarkdown(content: string): string {
   try {
-    if (!content) return ''
+    if (!content) return "";
 
-    const codeBlocks: string[] = []
+    const codeBlocks: string[] = [];
     const withCodePlaceholders = content.replace(/```[\s\S]*?```/g, (m) => {
-      const i = codeBlocks.length
-      codeBlocks.push(m)
-      return `__CODE_BLOCK_PLACEHOLDER_${i}__`
-    })
+      const i = codeBlocks.length;
+      codeBlocks.push(m);
+      return `__CODE_BLOCK_PLACEHOLDER_${i}__`;
+    });
 
     // Protect URLs so punctuation inside them won't be modified
-    const urls: string[] = []
+    const urls: string[] = [];
     const tmp = withCodePlaceholders.replace(/https?:\/\/\S+/g, (m) => {
-      const i = urls.length
-      urls.push(m)
-      return `__URL_PLACEHOLDER_${i}__`
-    })
+      const i = urls.length;
+      urls.push(m);
+      return `__URL_PLACEHOLDER_${i}__`;
+    });
 
     // Insert Markdown line-breaks after sentence-ending punctuation, excluding '.' to avoid splitting URLs
     // Two trailing spaces + newline create a Markdown <br>
-    const withBreaks = tmp.replace(/([。！？;；!?])\s*/g, '$1  \n')
+    const withBreaks = tmp.replace(/([。！？;；!?])\s*/g, "$1  \n");
 
     // Restore URLs
-    const restoredUrls = withBreaks.replace(/__URL_PLACEHOLDER_(\d+)__/g, (_m, idx) => urls[Number(idx)] || '')
+    const restoredUrls = withBreaks.replace(
+      /__URL_PLACEHOLDER_(\d+)__/g,
+      (_m, idx) => urls[Number(idx)] || ""
+    );
     const restored = restoredUrls.replace(
       /__CODE_BLOCK_PLACEHOLDER_(\d+)__/g,
-      (_m, idx) => codeBlocks[Number(idx)] || '',
-    )
+      (_m, idx) => codeBlocks[Number(idx)] || ""
+    );
 
-    return marked.parse(restored, { async: false }) as string || content
+    return (marked.parse(restored, { async: false }) as string) || content;
   } catch {
-    return content
+    return content;
   }
 }
 
-const canReadAgents = computed(() => auth.hasPermission('agents.read'))
-const canReadModels = computed(() => auth.hasPermission('models.read'))
-const canReadKBs = computed(() => auth.hasPermission('knowledge_bases.read'))
+const canReadAgents = computed(() => auth.hasPermission("agents.read"));
+const canReadModels = computed(() => auth.hasPermission("models.read"));
+const canReadKBs = computed(() => auth.hasPermission("knowledge_bases.read"));
 
-const loading = ref(false)
-const errorMessage = ref<string | null>(null)
+const loading = ref(false);
+const errorMessage = ref<string | null>(null);
 
-const agents = ref<AgentResponse[]>([])
-const models = ref<AIModelResponse[]>([])
-const knowledgeBases = ref<KnowledgeBaseResponse[]>([])
+const agents = ref<AgentResponse[]>([]);
+const models = ref<AIModelResponse[]>([]);
+const knowledgeBases = ref<KnowledgeBaseResponse[]>([]);
 
-const sessions = ref<ChatSession[]>(loadChatSessions())
-const activeSessionId = ref<string | null>(sessions.value[0]?.id ?? null)
+const sessions = ref<ChatSession[]>(loadChatSessions());
+const activeSessionId = ref<string | null>(sessions.value[0]?.id ?? null);
 
-const input = ref('')
-const sending = ref(false)
-const messageListEl = ref<HTMLElement | null>(null)
-const agentStreaming = ref(true)
-const compareMode = ref(false)
-const rawLlmContent = ref<string | null>(null)
-let agentAbort: AbortController | null = null
-let rawLlmAbort: AbortController | null = null  // 原始LLM流式请求控制器
-let rawLlmStreamContent = ''  // 原始LLM流式累积内容
-let currentToolCallsLog: Array<{type: 'call' | 'result'; round: number; data: Record<string, unknown>; at: number}> = []  // 当前轮工具调用日志
-const expandedToolLogs = ref(new Set<string>())  // 展开状态的工具日志（key = message.at）
-const reactSteps = ref<Array<{phase: 'thought' | 'action' | 'observation' | 'final'; round?: number; data: Record<string, unknown>; content?: string; at: number}>>([])  // ReAct 流程步骤
+const input = ref("");
+const sending = ref(false);
+const messageListEl = ref<HTMLElement | null>(null);
+const agentStreaming = ref(true);
+const compareMode = ref(false);
+const rawLlmContent = ref<string | null>(null);
+let agentAbort: AbortController | null = null;
+let rawLlmAbort: AbortController | null = null; // 原始LLM流式请求控制器
+let rawLlmStreamContent = ""; // 原始LLM流式累积内容
+let currentToolCallsLog: Array<{
+  type: "call" | "result";
+  round: number;
+  data: Record<string, unknown>;
+  at: number;
+}> = []; // 当前轮工具调用日志
+const expandedToolLogs = ref(new Set<string>()); // 展开状态的工具日志（key = message.at）
+const reactSteps = ref<
+  Array<{
+    phase: "thought" | "action" | "observation" | "final";
+    round?: number;
+    data: Record<string, unknown>;
+    content?: string;
+    at: number;
+  }>
+>([]); // ReAct 流程步骤
 
 function toggleToolLog(m: { at: number }) {
-  const key = String(m.at)
-  const next = new Set(expandedToolLogs.value)
+  const key = String(m.at);
+  const next = new Set(expandedToolLogs.value);
   if (next.has(key)) {
-    next.delete(key)
+    next.delete(key);
   } else {
-    next.add(key)
+    next.add(key);
   }
-  expandedToolLogs.value = next
+  expandedToolLogs.value = next;
 }
 
 const activeSession = computed<ChatSession | null>(() => {
-  const id = activeSessionId.value
-  if (!id) return null
-  return sessions.value.find((s) => s.id === id) ?? null
-})
+  const id = activeSessionId.value;
+  if (!id) return null;
+  return sessions.value.find((s) => s.id === id) ?? null;
+});
 
 const selectedAgentId = computed<number | null>({
   get() {
-    return activeSession.value?.agentId ?? null
+    return activeSession.value?.agentId ?? null;
   },
   set(agentId) {
-    const s = activeSession.value
-    if (!s) return
-    setSession({ ...s, agentId: agentId ?? undefined, updatedAt: Date.now() }, { resetIfStarted: true })
+    const s = activeSession.value;
+    if (!s) return;
+    setSession(
+      { ...s, agentId: agentId ?? undefined, updatedAt: Date.now() },
+      { resetIfStarted: true }
+    );
   },
-})
+});
 
 const selectedKbIds = computed<number[]>({
   get() {
-    return activeSession.value?.kbIds ?? []
+    return activeSession.value?.kbIds ?? [];
   },
   set(kbIds) {
-    const s = activeSession.value
-    if (!s) return
-    setSession({ ...s, kbIds, updatedAt: Date.now() }, { resetIfStarted: false })
+    const s = activeSession.value;
+    if (!s) return;
+    setSession(
+      { ...s, kbIds, updatedAt: Date.now() },
+      { resetIfStarted: false }
+    );
   },
-})
+});
 
-const selectedAgent = computed(() => agents.value.find((a) => a.agent_id === selectedAgentId.value) ?? null)
+const selectedAgent = computed(
+  () => agents.value.find((a) => a.agent_id === selectedAgentId.value) ?? null
+);
 const modelNameById = computed(() => {
-  const map = new Map<number, string>()
-  for (const m of models.value) map.set(m.model_id, m.name)
-  return map
-})
+  const map = new Map<number, string>();
+  for (const m of models.value) map.set(m.model_id, m.name);
+  return map;
+});
 const selectedKbNames = computed(() => {
-  const idSet = new Set(selectedKbIds.value)
-  return knowledgeBases.value.filter((kb) => idSet.has(kb.kb_id)).map((kb) => kb.name)
-})
+  const idSet = new Set(selectedKbIds.value);
+  return knowledgeBases.value
+    .filter((kb) => idSet.has(kb.kb_id))
+    .map((kb) => kb.name);
+});
 
 function persistSessions(next: ChatSession[]) {
-  sessions.value = next
-  saveChatSessions(next)
+  sessions.value = next;
+  saveChatSessions(next);
 }
 
 function setSession(session: ChatSession, opts: { resetIfStarted: boolean }) {
-  const started = session.messages.length > 0 || typeof session.conversationId === 'number'
+  const started =
+    session.messages.length > 0 || typeof session.conversationId === "number";
   if (opts.resetIfStarted && started) {
     const fresh = createChatSession({
-      mode: 'agent',
+      mode: "agent",
       agentId: session.agentId,
       kbIds: session.kbIds,
-    })
-    persistSessions(upsertChatSession(sessions.value, fresh))
-    activeSessionId.value = fresh.id
-    return
+    });
+    persistSessions(upsertChatSession(sessions.value, fresh));
+    activeSessionId.value = fresh.id;
+    return;
   }
 
-  persistSessions(upsertChatSession(sessions.value, session))
-  activeSessionId.value = session.id
+  persistSessions(upsertChatSession(sessions.value, session));
+  activeSessionId.value = session.id;
 }
 
 function ensureActiveSession() {
-  if (activeSession.value) return
-  const fresh = createChatSession()
-  persistSessions(upsertChatSession(sessions.value, fresh))
-  activeSessionId.value = fresh.id
+  if (activeSession.value) return;
+  const fresh = createChatSession();
+  persistSessions(upsertChatSession(sessions.value, fresh));
+  activeSessionId.value = fresh.id;
 }
 
 function newChat() {
   const fresh = createChatSession({
-    mode: 'agent',
+    mode: "agent",
     agentId: selectedAgentId.value ?? undefined,
     kbIds: selectedKbIds.value,
-  })
-  persistSessions(upsertChatSession(sessions.value, fresh))
-  activeSessionId.value = fresh.id
+  });
+  persistSessions(upsertChatSession(sessions.value, fresh));
+  activeSessionId.value = fresh.id;
 }
 
 function removeSession(id: string) {
-  const next = deleteChatSession(sessions.value, id)
-  persistSessions(next)
+  const next = deleteChatSession(sessions.value, id);
+  persistSessions(next);
   if (activeSessionId.value === id) {
-    activeSessionId.value = next[0]?.id ?? null
+    activeSessionId.value = next[0]?.id ?? null;
   }
-  ensureActiveSession()
+  ensureActiveSession();
 }
 
 function formatTime(ts: number) {
-  const d = new Date(ts)
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
-  return `${hh}:${mm}`
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 async function scrollToBottom() {
-  await nextTick()
-  const el = messageListEl.value
-  if (!el) return
-  el.scrollTop = el.scrollHeight
+  await nextTick();
+  const el = messageListEl.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
 }
 
 async function loadLists() {
-  if (!canReadAgents.value) return
-  loading.value = true
-  errorMessage.value = null
+  if (!canReadAgents.value) return;
+  loading.value = true;
+  errorMessage.value = null;
   try {
     const [agentList, modelList, kbList] = await Promise.all([
       agentApi.list(),
       canReadModels.value ? aiModelApi.list() : Promise.resolve([]),
       canReadKBs.value ? knowledgeBaseApi.list() : Promise.resolve([]),
-    ])
-    agents.value = agentList
-    models.value = modelList
-    knowledgeBases.value = kbList
+    ]);
+    agents.value = agentList;
+    models.value = modelList;
+    knowledgeBases.value = kbList;
 
-    ensureActiveSession()
-    const s = activeSession.value
-    if (!s) return
+    ensureActiveSession();
+    const s = activeSession.value;
+    if (!s) return;
 
-    const first = agents.value[0]
+    const first = agents.value[0];
     if (!s.agentId && first) {
-      setSession({ ...s, mode: 'agent', agentId: first.agent_id, updatedAt: Date.now() }, { resetIfStarted: true })
+      setSession(
+        { ...s, mode: "agent", agentId: first.agent_id, updatedAt: Date.now() },
+        { resetIfStarted: true }
+      );
     }
   } catch (e) {
-    errorMessage.value = e instanceof Error ? e.message : '加载失败'
+    errorMessage.value = e instanceof Error ? e.message : "加载失败";
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
 async function send() {
-  const s = activeSession.value
-  if (!s) return
-  const content = input.value.trim()
-  if (!content) return
-  if (sending.value) return
+  const s = activeSession.value;
+  if (!s) return;
+  const content = input.value.trim();
+  if (!content) return;
+  if (sending.value) return;
 
-  errorMessage.value = null
-  sending.value = true
-  input.value = ''
-  agentAbort?.abort()
-  agentAbort = null
-  rawLlmAbort?.abort()
-  rawLlmAbort = null
+  errorMessage.value = null;
+  sending.value = true;
+  input.value = "";
+  agentAbort?.abort();
+  agentAbort = null;
+  rawLlmAbort?.abort();
+  rawLlmAbort = null;
 
-  const now = Date.now()
-  const userMsg = { role: 'user' as const, content, at: now }
+  const now = Date.now();
+  const userMsg = { role: "user" as const, content, at: now };
   const optimistic: ChatSession = {
     ...s,
-    title: s.title === '新对话' ? content.slice(0, 20) || '新对话' : s.title,
+    title: s.title === "新对话" ? content.slice(0, 20) || "新对话" : s.title,
     updatedAt: now,
     messages: [...s.messages, userMsg],
-  }
-  setSession(optimistic, { resetIfStarted: false })
-  await scrollToBottom()
+  };
+  setSession(optimistic, { resetIfStarted: false });
+  await scrollToBottom();
 
   try {
-    if (optimistic.mode === 'agent') {
-      const agentId = optimistic.agentId
-      if (!agentId) throw new Error('请先选择智能体')
-      const kbIds = canReadKBs.value && optimistic.kbIds.length > 0 ? optimistic.kbIds : null
+    if (optimistic.mode === "agent") {
+      const agentId = optimistic.agentId;
+      if (!agentId) throw new Error("请先选择智能体");
+      const kbIds =
+        canReadKBs.value && optimistic.kbIds.length > 0
+          ? optimistic.kbIds
+          : null;
 
       if (!agentStreaming.value) {
         const res = await agentApi.chat(agentId, {
           conversation_id: optimistic.conversationId ?? null,
-          messages: [{ role: 'user', content }],
+          messages: [{ role: "user", content }],
           kb_ids: kbIds,
           rag_top_k: 5,
           max_tool_rounds: 8,
           max_history_messages: 30,
-        })
+        });
 
         const assistantMsg = {
-          role: 'assistant' as const,
+          role: "assistant" as const,
           content: res.content,
           at: Date.now(),
           meta: {
             raw_content: res.raw_content ?? undefined,
             sources: res.sources ?? undefined,
           },
-        }
+        };
         setSession(
           {
             ...optimistic,
-            mode: 'agent',
+            mode: "agent",
             conversationId: res.conversation_id,
             lastMeta: res.meta ?? {},
             updatedAt: Date.now(),
             messages: [...optimistic.messages, assistantMsg],
           },
-          { resetIfStarted: false },
-        )
-        await scrollToBottom()
-        return
+          { resetIfStarted: false }
+        );
+        await scrollToBottom();
+        return;
       }
 
       // 对比模式：预置占位消息（确保对比视图始终渲染）
       const assistantMsg: ChatSessionMessage = compareMode.value
-        ? { role: 'assistant' as const, content: '', at: Date.now(), meta: { raw_content: '', _rawLoading: true } }
-        : { role: 'assistant' as const, content: '', at: Date.now() }
+        ? {
+            role: "assistant" as const,
+            content: "",
+            at: Date.now(),
+            meta: { raw_content: "", _rawLoading: true },
+          }
+        : { role: "assistant" as const, content: "", at: Date.now() };
       setSession(
-        { ...optimistic, updatedAt: Date.now(), messages: [...optimistic.messages, assistantMsg] },
-        { resetIfStarted: false },
-      )
-      await scrollToBottom()
+        {
+          ...optimistic,
+          updatedAt: Date.now(),
+          messages: [...optimistic.messages, assistantMsg],
+        },
+        { resetIfStarted: false }
+      );
+      await scrollToBottom();
 
-      agentAbort = new AbortController()
-      let out = ''
+      agentAbort = new AbortController();
+      let out = "";
 
       // ── 对比模式：并行发起独立的原始 LLM 流式请求（SSE）──
-      const modelId = selectedAgent.value?.model_id ?? null
-      rawLlmContent.value = null
-      rawLlmStreamContent = ''
-      currentToolCallsLog = []  // 重置工具调用日志
-      reactSteps.value = []  // 重置 ReAct 流程步骤
+      const modelId = selectedAgent.value?.model_id ?? null;
+      rawLlmContent.value = null;
+      rawLlmStreamContent = "";
+      currentToolCallsLog = []; // 重置工具调用日志
+      reactSteps.value = []; // 重置 ReAct 流程步骤
       if (compareMode.value && modelId) {
-        rawLlmAbort = new AbortController()
-        
+        rawLlmAbort = new AbortController();
+
         // 使用 SSE 流式请求原始 LLM
         sseJsonPost(
           `/api/v1/models/${modelId}/chat?stream=true`,
-          { messages: [{ role: 'user', content }] },
+          { messages: [{ role: "user", content }] },
           {
             signal: rawLlmAbort.signal,
             onData: (delta) => {
               // 累积流式内容并实时更新UI
-              rawLlmStreamContent += delta
-              rawLlmContent.value = rawLlmStreamContent
-              
-              const cur = activeSession.value
+              rawLlmStreamContent += delta;
+              rawLlmContent.value = rawLlmStreamContent;
+
+              const cur = activeSession.value;
               if (cur) {
-                const msgs = cur.messages.slice()
-                let idx = msgs.length - 1
-                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                const msgs = cur.messages.slice();
+                let idx = msgs.length - 1;
+                while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
                 if (idx >= 0 && msgs[idx]) {
-                  const last = msgs[idx]
-                  msgs[idx] = { 
-                    ...last, 
-                    meta: { 
-                      ...(last.meta as Record<string, unknown>), 
-                      raw_content: rawLlmStreamContent, 
-                      _rawLoading: false 
-                    } 
-                  }
-                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                  const last = msgs[idx];
+                  msgs[idx] = {
+                    ...last,
+                    meta: {
+                      ...(last.meta as Record<string, unknown>),
+                      raw_content: rawLlmStreamContent,
+                      _rawLoading: false,
+                    },
+                  };
+                  setSession(
+                    { ...cur, updatedAt: Date.now(), messages: msgs },
+                    { resetIfStarted: false }
+                  );
                 }
               }
             },
             onError: (err) => {
-              console.error('Raw LLM stream error:', err)
+              console.error("Raw LLM stream error:", err);
               // 标记加载结束，即使出错也显示已有内容
-              const cur = activeSession.value
+              const cur = activeSession.value;
               if (cur) {
-                const msgs = cur.messages.slice()
-                let idx = msgs.length - 1
-                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                const msgs = cur.messages.slice();
+                let idx = msgs.length - 1;
+                while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
                 if (idx >= 0 && msgs[idx]) {
-                  const last = msgs[idx]
-                  msgs[idx] = { ...last, meta: { ...(last.meta as Record<string, unknown>), _rawLoading: false } }
-                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                  const last = msgs[idx];
+                  msgs[idx] = {
+                    ...last,
+                    meta: {
+                      ...(last.meta as Record<string, unknown>),
+                      _rawLoading: false,
+                    },
+                  };
+                  setSession(
+                    { ...cur, updatedAt: Date.now(), messages: msgs },
+                    { resetIfStarted: false }
+                  );
                 }
               }
             },
           }
-        ).catch(() => {})
+        ).catch(() => {});
       }
 
       // ── Agent SSE 主请求（不再携带 compare 参数）──
@@ -365,7 +423,7 @@ async function send() {
         `/api/v1/agents/${agentId}/chat?stream=true`,
         {
           conversation_id: optimistic.conversationId ?? null,
-          messages: [{ role: 'user', content }],
+          messages: [{ role: "user", content }],
           kb_ids: kbIds,
           rag_top_k: 5,
           max_tool_rounds: 8,
@@ -375,481 +433,620 @@ async function send() {
           signal: agentAbort.signal,
           onEvent: (event, data) => {
             try {
-              if (event === 'meta') {
-                const payload = JSON.parse(data) as { conversation_id?: number; meta?: Record<string, unknown> }
-                const cur = activeSession.value
-                if (!cur) return
+              if (event === "meta") {
+                const payload = JSON.parse(data) as {
+                  conversation_id?: number;
+                  meta?: Record<string, unknown>;
+                };
+                const cur = activeSession.value;
+                if (!cur) return;
                 setSession(
                   {
                     ...cur,
-                    mode: 'agent',
-                    conversationId: payload.conversation_id ?? cur.conversationId,
+                    mode: "agent",
+                    conversationId:
+                      payload.conversation_id ?? cur.conversationId,
                     lastMeta: payload.meta ?? cur.lastMeta,
                     updatedAt: Date.now(),
                   },
-                  { resetIfStarted: false },
-                )
-                return
+                  { resetIfStarted: false }
+                );
+                return;
               }
 
               // ━━━ ReAct Thought 阶段 ━━━
-              if (event === 'thought') {
+              if (event === "thought") {
                 const payload = JSON.parse(data) as {
-                  round?: number
-                  status?: string
-                  message?: string
-                }
-                
+                  round?: number;
+                  status?: string;
+                  message?: string;
+                };
+
                 // 记录 ReAct 步骤
                 reactSteps.value.push({
-                  phase: 'thought',
+                  phase: "thought",
                   round: payload.round,
                   data: payload,
                   at: Date.now(),
-                })
+                });
 
-                const cur = activeSession.value
-                if (!cur) return
-                
+                const cur = activeSession.value;
+                if (!cur) return;
+
                 // 更新当前 assistant 消息的 meta，嵌入 ReAct 流程信息
-                const msgs = cur.messages.slice()
-                let idx = msgs.length - 1
-                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                const msgs = cur.messages.slice();
+                let idx = msgs.length - 1;
+                while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
                 if (idx >= 0 && msgs[idx]) {
-                  const last = msgs[idx]
+                  const last = msgs[idx];
                   msgs[idx] = {
                     ...last,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
                       react_steps: [...reactSteps.value],
-                      current_phase: 'thought',
+                      current_phase: "thought",
                       current_round: payload.round,
                       tool_calls_log: [...currentToolCallsLog],
-                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                      _rawLoading:
+                        (last.meta as Record<string, unknown>)?._rawLoading ??
+                        false,
                     },
-                  }
-                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                  };
+                  setSession(
+                    { ...cur, updatedAt: Date.now(), messages: msgs },
+                    { resetIfStarted: false }
+                  );
                 }
-                return
+                return;
               }
 
               // ━━━ ReAct Action 阶段 ━━━
-              if (event === 'action') {
+              if (event === "action") {
                 const payload = JSON.parse(data) as {
-                  round?: number
-                  thought?: string
-                  tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown }>
-                }
-                
+                  round?: number;
+                  thought?: string;
+                  tool_calls?: Array<{
+                    id?: string;
+                    name?: string;
+                    arguments?: unknown;
+                  }>;
+                };
+
                 // 记录 ReAct 步骤
                 reactSteps.value.push({
-                  phase: 'action',
+                  phase: "action",
                   round: payload.round,
                   data: payload,
                   content: payload.thought,
                   at: Date.now(),
-                })
+                });
 
                 // 收集到工具调用日志
-                const toolRound = typeof payload.round === 'number' ? payload.round : reactSteps.value.length
-                const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls : []
-                
-                const logEntry = { 
-                  type: 'call' as const, 
-                  round: toolRound, 
-                  data: { tool_calls: toolCalls }, 
-                  at: Date.now() 
-                }
-                currentToolCallsLog.push(logEntry)
+                const toolRound =
+                  typeof payload.round === "number"
+                    ? payload.round
+                    : reactSteps.value.length;
+                const toolCalls = Array.isArray(payload.tool_calls)
+                  ? payload.tool_calls
+                  : [];
 
-                const cur = activeSession.value
-                if (!cur) return
+                const logEntry = {
+                  type: "call" as const,
+                  round: toolRound,
+                  data: { tool_calls: toolCalls },
+                  at: Date.now(),
+                };
+                currentToolCallsLog.push(logEntry);
+
+                const cur = activeSession.value;
+                if (!cur) return;
 
                 // 更新 assistant 消息 meta
-                const msgs = cur.messages.slice()
-                let idx = msgs.length - 1
-                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                const msgs = cur.messages.slice();
+                let idx = msgs.length - 1;
+                while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
                 if (idx >= 0 && msgs[idx]) {
-                  const last = msgs[idx]
+                  const last = msgs[idx];
                   msgs[idx] = {
                     ...last,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
                       react_steps: [...reactSteps.value],
-                      current_phase: 'action',
+                      current_phase: "action",
                       current_round: payload.round,
                       tool_calls_log: [...currentToolCallsLog],
-                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                      _rawLoading:
+                        (last.meta as Record<string, unknown>)?._rawLoading ??
+                        false,
                     },
-                  }
-                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                  };
+                  setSession(
+                    { ...cur, updatedAt: Date.now(), messages: msgs },
+                    { resetIfStarted: false }
+                  );
                 }
 
                 // 同时保留独立工具消息（用于可视化展示）
                 const lines = toolCalls.map((c) => {
-                  const name = typeof c.name === 'string' ? c.name : '(unknown)'
-                  const args = c.arguments ?? {}
-                  return `- ${name} ${formatJson(args)}`
-                })
+                  const name =
+                    typeof c.name === "string" ? c.name : "(unknown)";
+                  const args = c.arguments ?? {};
+                  return `- ${name} ${formatJson(args)}`;
+                });
 
                 const actionMsg = {
-                  role: 'tool' as const,
-                  content: `🔧 **Action** (第 ${payload.round ?? toolRound} 轮)\n${lines.join('\n')}`.trim(),
-                  meta: { 
-                    event: 'react_action', 
-                    phase: 'action',
-                    round: payload.round ?? toolRound, 
+                  role: "tool" as const,
+                  content: `🔧 **Action** (第 ${
+                    payload.round ?? toolRound
+                  } 轮)\n${lines.join("\n")}`.trim(),
+                  meta: {
+                    event: "react_action",
+                    phase: "action",
+                    round: payload.round ?? toolRound,
                     tool_calls: toolCalls,
                     thought: payload.thought,
                   } as Record<string, unknown>,
                   at: Date.now(),
-                }
+                };
 
                 setSession(
-                  { ...cur, updatedAt: Date.now(), messages: [...cur.messages, actionMsg] },
-                  { resetIfStarted: false },
-                )
-                return
+                  {
+                    ...cur,
+                    updatedAt: Date.now(),
+                    messages: [...cur.messages, actionMsg],
+                  },
+                  { resetIfStarted: false }
+                );
+                return;
               }
 
               // ━━━ ReAct Observation 阶段 ━━━
-              if (event === 'observation') {
+              if (event === "observation") {
                 const payload = JSON.parse(data) as {
-                  round?: number
-                  status?: string  // 'analyzing' | 'complete'
-                  message?: string
-                  content?: string  // LLM 的观察/分析内容
-                  raw_results_count?: number
-                  tool_results?: Array<Record<string, unknown>>
-                  tool_summary?: Array<{name?: string; success?: boolean}>
-                }
-                
+                  round?: number;
+                  status?: string; // 'analyzing' | 'complete'
+                  message?: string;
+                  content?: string; // LLM 的观察/分析内容
+                  raw_results_count?: number;
+                  tool_results?: Array<Record<string, unknown>>;
+                  tool_summary?: Array<{ name?: string; success?: boolean }>;
+                };
+
                 // 如果是"正在分析"的中间状态，只更新 UI 状态
-                if (payload.status === 'analyzing' || !payload.status || !payload.content) {
+                if (
+                  payload.status === "analyzing" ||
+                  !payload.status ||
+                  !payload.content
+                ) {
                   reactSteps.value.push({
-                    phase: 'observation',
+                    phase: "observation",
                     round: payload.round,
                     data: payload,
                     at: Date.now(),
-                  })
+                  });
 
-                  const cur = activeSession.value
+                  const cur = activeSession.value;
                   if (cur) {
-                    const msgs = cur.messages.slice()
-                    let idx = msgs.length - 1
-                    while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                    const msgs = cur.messages.slice();
+                    let idx = msgs.length - 1;
+                    while (idx >= 0 && msgs[idx]?.role !== "assistant")
+                      idx -= 1;
                     if (idx >= 0 && msgs[idx]) {
-                      const last = msgs[idx]
+                      const last = msgs[idx];
                       msgs[idx] = {
                         ...last,
                         meta: {
                           ...(last.meta as Record<string, unknown>),
                           react_steps: [...reactSteps.value],
-                          current_phase: 'observation',
+                          current_phase: "observation",
                           current_round: payload.round,
                           tool_calls_log: [...currentToolCallsLog],
-                          _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                          _rawLoading:
+                            (last.meta as Record<string, unknown>)
+                              ?._rawLoading ?? false,
                         },
-                      }
-                      setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                      };
+                      setSession(
+                        { ...cur, updatedAt: Date.now(), messages: msgs },
+                        { resetIfStarted: false }
+                      );
                     }
                   }
-                  
+
                   // 显示"正在分析"的消息
                   const analyzingMsg = {
-                    role: 'tool' as const,
-                    content: `👁️ **Observation** (第 ${payload.round ?? '?'} 轮)\n\n⏳ 正在分析工具执行结果...`,
-                    meta: { 
-                      event: 'react_observation', 
-                      phase: 'observation',
-                      status: 'analyzing',
+                    role: "tool" as const,
+                    content: `👁️ **Observation** (第 ${
+                      payload.round ?? "?"
+                    } 轮)\n\n⏳ 正在分析工具执行结果...`,
+                    meta: {
+                      event: "react_observation",
+                      phase: "observation",
+                      status: "analyzing",
                       round: payload.round,
                     } as Record<string, unknown>,
                     at: Date.now(),
-                  }
+                  };
 
-                  const analyzingCur = activeSession.value
+                  const analyzingCur = activeSession.value;
                   if (analyzingCur) {
                     setSession(
-                      { ...analyzingCur, updatedAt: Date.now(), messages: [...analyzingCur.messages, analyzingMsg] },
-                      { resetIfStarted: false },
-                    )
+                      {
+                        ...analyzingCur,
+                        updatedAt: Date.now(),
+                        messages: [...analyzingCur.messages, analyzingMsg],
+                      },
+                      { resetIfStarted: false }
+                    );
                   }
-                  return
+                  return;
                 }
-                
+
                 // ── status: 'complete' - LLM 分析完成，包含真正的洞察 ──
-                
+
                 // 记录 ReAct 步骤
                 reactSteps.value.push({
-                  phase: 'observation',
+                  phase: "observation",
                   round: payload.round,
                   data: payload,
                   at: Date.now(),
-                })
+                });
 
                 // 收集工具结果到日志
-                const toolResults = Array.isArray(payload.tool_results) ? payload.tool_results : []
+                const toolResults = Array.isArray(payload.tool_results)
+                  ? payload.tool_results
+                  : [];
                 for (const tr of toolResults) {
-                  currentToolCallsLog.push({ 
-                    type: 'result' as const, 
-                    round: payload.round ?? reactSteps.value.length, 
-                    data: { ...tr }, 
-                    at: Date.now() 
-                  })
+                  currentToolCallsLog.push({
+                    type: "result" as const,
+                    round: payload.round ?? reactSteps.value.length,
+                    data: { ...tr },
+                    at: Date.now(),
+                  });
                 }
 
-                const cur = activeSession.value
-                if (!cur) return
+                const cur = activeSession.value;
+                if (!cur) return;
 
                 // 更新 assistant 消息 meta
-                const msgs = cur.messages.slice()
-                let idx = msgs.length - 1
-                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                const msgs = cur.messages.slice();
+                let idx = msgs.length - 1;
+                while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
                 if (idx >= 0 && msgs[idx]) {
-                  const last = msgs[idx]
+                  const last = msgs[idx];
                   msgs[idx] = {
                     ...last,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
                       react_steps: [...reactSteps.value],
-                      current_phase: 'observation',
+                      current_phase: "observation",
                       current_round: payload.round,
                       tool_calls_log: [...currentToolCallsLog],
-                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                      _rawLoading:
+                        (last.meta as Record<string, unknown>)?._rawLoading ??
+                        false,
                     },
-                  }
-                  setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                  };
+                  setSession(
+                    { ...cur, updatedAt: Date.now(), messages: msgs },
+                    { resetIfStarted: false }
+                  );
                 }
 
                 // 构建完整的 Observation 消息（包含 LLM 的洞察）
-                let obsContent = `👁️ **Observation** (第 ${payload.round ?? '?'} 轮)\n\n`
-                
+                let obsContent = `👁️ **Observation** (第 ${
+                  payload.round ?? "?"
+                } 轮)\n\n`;
+
                 // 添加 LLM 的观察/分析内容（核心！）
                 if (payload.content) {
-                  obsContent += `### 🔍 **LLM 观察与分析**\n\n${payload.content}\n\n`
+                  obsContent += `### 🔍 **LLM 观察与分析**\n\n${payload.content}\n\n`;
                 }
-                
+
                 // 工具执行摘要
-                if (Array.isArray(payload.tool_summary) && payload.tool_summary.length > 0) {
-                  obsContent += `### 📊 工具执行摘要\n\n`
+                if (
+                  Array.isArray(payload.tool_summary) &&
+                  payload.tool_summary.length > 0
+                ) {
+                  obsContent += `### 📊 工具执行摘要\n\n`;
                   for (const ts of payload.tool_summary) {
-                    const icon = ts.success ? '✅' : '❌'
-                    obsContent += `${icon} ${ts.name ?? 'unknown'}\n`
+                    const icon = ts.success ? "✅" : "❌";
+                    obsContent += `${icon} ${ts.name ?? "unknown"}\n`;
                   }
                 }
 
                 const obsMsg = {
-                  role: 'tool' as const,
+                  role: "tool" as const,
                   content: obsContent.trim(),
-                  meta: { 
-                    event: 'react_observation', 
-                    phase: 'observation',
-                    status: 'complete',
+                  meta: {
+                    event: "react_observation",
+                    phase: "observation",
+                    status: "complete",
                     round: payload.round,
-                    observation_content: payload.content,  // LLM 的洞察内容
+                    observation_content: payload.content, // LLM 的洞察内容
                     tool_results: toolResults,
                     tool_summary: payload.tool_summary,
                   } as Record<string, unknown>,
                   at: Date.now(),
-                }
+                };
 
                 setSession(
-                  { ...cur, updatedAt: Date.now(), messages: [...cur.messages, obsMsg] },
-                  { resetIfStarted: false },
-                )
-                return
+                  {
+                    ...cur,
+                    updatedAt: Date.now(),
+                    messages: [...cur.messages, obsMsg],
+                  },
+                  { resetIfStarted: false }
+                );
+                return;
               }
 
               // 兼容旧的 tool_call 事件（如果后端仍发送）
-              if (event === 'tool_call') {
+              if (event === "tool_call") {
                 const payload = JSON.parse(data) as {
-                  tool_round?: number
-                  tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown }>
-                }
-                const toolRound = typeof payload.tool_round === 'number' ? payload.tool_round : 0
-                const toolCalls = Array.isArray(payload.tool_calls) ? payload.tool_calls : []
+                  tool_round?: number;
+                  tool_calls?: Array<{
+                    id?: string;
+                    name?: string;
+                    arguments?: unknown;
+                  }>;
+                };
+                const toolRound =
+                  typeof payload.tool_round === "number"
+                    ? payload.tool_round
+                    : 0;
+                const toolCalls = Array.isArray(payload.tool_calls)
+                  ? payload.tool_calls
+                  : [];
 
                 // 收集到工具调用日志（用于对比模式Agent栏内展示）
-                const logEntry = { type: 'call' as const, round: toolRound, data: { tool_calls: toolCalls }, at: Date.now() }
-                currentToolCallsLog.push(logEntry)
+                const logEntry = {
+                  type: "call" as const,
+                  round: toolRound,
+                  data: { tool_calls: toolCalls },
+                  at: Date.now(),
+                };
+                currentToolCallsLog.push(logEntry);
 
                 // 更新当前 assistant 消息的 meta，嵌入工具调用信息
-                const cur = activeSession.value
+                const cur = activeSession.value;
                 if (cur) {
-                  const msgs = cur.messages.slice()
-                  let idx = msgs.length - 1
-                  while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                  const msgs = cur.messages.slice();
+                  let idx = msgs.length - 1;
+                  while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
                   if (idx >= 0 && msgs[idx]) {
-                    const last = msgs[idx]
+                    const last = msgs[idx];
                     msgs[idx] = {
                       ...last,
                       meta: {
                         ...(last.meta as Record<string, unknown>),
                         tool_calls_log: [...currentToolCallsLog],
-                        _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                        _rawLoading:
+                          (last.meta as Record<string, unknown>)?._rawLoading ??
+                          false,
                       },
-                    }
-                    setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                    };
+                    setSession(
+                      { ...cur, updatedAt: Date.now(), messages: msgs },
+                      { resetIfStarted: false }
+                    );
                   }
                 }
 
                 // 同时保留独立工具消息（普通模式使用）
                 const lines = toolCalls.map((c) => {
-                  const name = typeof c.name === 'string' ? c.name : '(unknown)'
-                  const args = c.arguments ?? {}
-                  return `- ${name} ${formatJson(args)}`
-                })
+                  const name =
+                    typeof c.name === "string" ? c.name : "(unknown)";
+                  const args = c.arguments ?? {};
+                  return `- ${name} ${formatJson(args)}`;
+                });
 
                 const toolMsg = {
-                  role: 'tool' as const,
-                  content: `【工具调用】第 ${toolRound} 轮\n${lines.join('\n')}`.trim(),
-                  meta: { event: 'tool_call', tool_round: toolRound, tool_calls: toolCalls },
+                  role: "tool" as const,
+                  content: `【工具调用】第 ${toolRound} 轮\n${lines.join(
+                    "\n"
+                  )}`.trim(),
+                  meta: {
+                    event: "tool_call",
+                    tool_round: toolRound,
+                    tool_calls: toolCalls,
+                  },
                   at: Date.now(),
-                }
+                };
 
-                if (!cur) return
+                if (!cur) return;
                 setSession(
-                  { ...cur, updatedAt: Date.now(), messages: [...cur.messages, toolMsg] },
-                  { resetIfStarted: false },
-                )
-                return
+                  {
+                    ...cur,
+                    updatedAt: Date.now(),
+                    messages: [...cur.messages, toolMsg],
+                  },
+                  { resetIfStarted: false }
+                );
+                return;
               }
 
-              if (event === 'tool_result') {
+              if (event === "tool_result") {
                 const payload = JSON.parse(data) as {
-                  tool_round?: number
-                  tool_name?: string
-                  tool_call_id?: string
-                  arguments?: unknown
-                  output?: unknown
-                }
-                const toolRound = typeof payload.tool_round === 'number' ? payload.tool_round : 0
-                const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '(unknown)'
+                  tool_round?: number;
+                  tool_name?: string;
+                  tool_call_id?: string;
+                  arguments?: unknown;
+                  output?: unknown;
+                };
+                const toolRound =
+                  typeof payload.tool_round === "number"
+                    ? payload.tool_round
+                    : 0;
+                const toolName =
+                  typeof payload.tool_name === "string"
+                    ? payload.tool_name
+                    : "(unknown)";
 
                 // 收集到工具调用日志
-                currentToolCallsLog.push({ type: 'result' as const, round: toolRound, data: { ...payload }, at: Date.now() })
+                currentToolCallsLog.push({
+                  type: "result" as const,
+                  round: toolRound,
+                  data: { ...payload },
+                  at: Date.now(),
+                });
 
                 // 更新当前 assistant 消息的 meta
-                const cur = activeSession.value
+                const cur = activeSession.value;
                 if (cur) {
-                  const msgs = cur.messages.slice()
-                  let idx = msgs.length - 1
-                  while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                  const msgs = cur.messages.slice();
+                  let idx = msgs.length - 1;
+                  while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
                   if (idx >= 0 && msgs[idx]) {
-                    const last = msgs[idx]
+                    const last = msgs[idx];
                     msgs[idx] = {
                       ...last,
                       meta: {
                         ...(last.meta as Record<string, unknown>),
                         tool_calls_log: [...currentToolCallsLog],
-                        _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                        _rawLoading:
+                          (last.meta as Record<string, unknown>)?._rawLoading ??
+                          false,
                       },
-                    }
-                    setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                    };
+                    setSession(
+                      { ...cur, updatedAt: Date.now(), messages: msgs },
+                      { resetIfStarted: false }
+                    );
                   }
                 }
 
                 // 同时保留独立工具消息（普通模式使用）
-                const outText = formatJson(payload.output ?? {})
+                const outText = formatJson(payload.output ?? {});
                 const toolMsg = {
-                  role: 'tool' as const,
-                  content: `【工具结果】第 ${toolRound} 轮 ${toolName}\n${outText}`.trim(),
-                  meta: { event: 'tool_result', ...payload },
+                  role: "tool" as const,
+                  content:
+                    `【工具结果】第 ${toolRound} 轮 ${toolName}\n${outText}`.trim(),
+                  meta: { event: "tool_result", ...payload },
                   at: Date.now(),
-                }
+                };
 
-                if (!cur) return
+                if (!cur) return;
                 setSession(
-                  { ...cur, updatedAt: Date.now(), messages: [...cur.messages, toolMsg] },
-                  { resetIfStarted: false },
-                )
-                return
+                  {
+                    ...cur,
+                    updatedAt: Date.now(),
+                    messages: [...cur.messages, toolMsg],
+                  },
+                  { resetIfStarted: false }
+                );
+                return;
               }
 
-              if (event === 'final') {
-                const payload = JSON.parse(data) as { content?: string }
-                const finalContent = typeof payload.content === 'string' ? payload.content : ''
-                const cur = activeSession.value
-                if (!cur) return
-                
+              if (event === "final") {
+                const payload = JSON.parse(data) as { content?: string };
+                const finalContent =
+                  typeof payload.content === "string" ? payload.content : "";
+                const cur = activeSession.value;
+                if (!cur) return;
+
                 // 标记 ReAct 循环完成
                 reactSteps.value.push({
-                  phase: 'final',
+                  phase: "final",
                   data: { content: finalContent },
                   at: Date.now(),
-                })
-                
-                const msgs = cur.messages.slice()
-                let idx = msgs.length - 1
-                while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+                });
+
+                const msgs = cur.messages.slice();
+                let idx = msgs.length - 1;
+                while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
                 if (idx < 0) {
-                  msgs.push({ role: 'assistant' as const, content: finalContent, at: Date.now() })
+                  msgs.push({
+                    role: "assistant" as const,
+                    content: finalContent,
+                    at: Date.now(),
+                  });
                 } else {
-                  const last = msgs[idx]
-                  if (!last) return
+                  const last = msgs[idx];
+                  if (!last) return;
                   // 对比模式：保留/更新 raw_content（可能已有值或仍为加载中占位）
-                  const existingRaw = (last.meta as Record<string, unknown>)?.raw_content as string | undefined
+                  const existingRaw = (last.meta as Record<string, unknown>)
+                    ?.raw_content as string | undefined;
                   msgs[idx] = {
                     ...last,
                     content: finalContent,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
                       react_steps: [...reactSteps.value],
-                      current_phase: 'final',
+                      current_phase: "final",
                       tool_calls_log: [...currentToolCallsLog],
-                      raw_content: rawLlmContent.value ?? existingRaw ?? '',
+                      raw_content: rawLlmContent.value ?? existingRaw ?? "",
                       _rawLoading: !rawLlmContent.value && compareMode.value,
                     },
-                  }
+                  };
                 }
-                out = finalContent
-                setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
-                return
+                out = finalContent;
+                setSession(
+                  { ...cur, updatedAt: Date.now(), messages: msgs },
+                  { resetIfStarted: false }
+                );
+                return;
               }
             } catch {
               // ignore
             }
           },
           onData: (delta) => {
-            out += delta
-            const cur = activeSession.value
-            if (!cur) return
-            const msgs = cur.messages.slice()
-            let idx = msgs.length - 1
-            while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+            out += delta;
+            const cur = activeSession.value;
+            if (!cur) return;
+            const msgs = cur.messages.slice();
+            let idx = msgs.length - 1;
+            while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
             if (idx < 0) {
-              msgs.push({ role: 'assistant' as const, content: '', at: Date.now() })
-              idx = msgs.length - 1
+              msgs.push({
+                role: "assistant" as const,
+                content: "",
+                at: Date.now(),
+              });
+              idx = msgs.length - 1;
             }
-            const last = msgs[idx]
-            if (!last) return
-            msgs[idx] = { ...last, content: out }
-            setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+            const last = msgs[idx];
+            if (!last) return;
+            msgs[idx] = { ...last, content: out };
+            setSession(
+              { ...cur, updatedAt: Date.now(), messages: msgs },
+              { resetIfStarted: false }
+            );
           },
-        },
-      )
+        }
+      );
 
       // ── 对比模式：确保原始 LLM 结果已合并到消息中 ──
       if (compareMode.value && !rawLlmContent.value) {
         // 等待原始 LLM 最多 3 秒
-        const deadline = Date.now() + 3000
+        const deadline = Date.now() + 3000;
         while (!rawLlmContent.value && Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 200))
+          await new Promise((r) => setTimeout(r, 200));
         }
         // 超时则标记为加载失败
         if (!rawLlmContent.value) {
-          const cur = activeSession.value
+          const cur = activeSession.value;
           if (cur) {
-            const msgs = cur.messages.slice()
-            let idx = msgs.length - 1
-            while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
+            const msgs = cur.messages.slice();
+            let idx = msgs.length - 1;
+            while (idx >= 0 && msgs[idx]?.role !== "assistant") idx -= 1;
             if (idx >= 0 && msgs[idx]) {
-              const last = msgs[idx]
-              const meta = last.meta as Record<string, unknown>
+              const last = msgs[idx];
+              const meta = last.meta as Record<string, unknown>;
               if (!meta?.raw_content || meta._rawLoading) {
-                msgs[idx] = { ...last, meta: { ...meta, raw_content: '[原始 LLM 响应超时]', _rawLoading: false } }
-                setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
+                msgs[idx] = {
+                  ...last,
+                  meta: {
+                    ...meta,
+                    raw_content: "[原始 LLM 响应超时]",
+                    _rawLoading: false,
+                  },
+                };
+                setSession(
+                  { ...cur, updatedAt: Date.now(), messages: msgs },
+                  { resetIfStarted: false }
+                );
               }
             }
           }
@@ -858,46 +1055,45 @@ async function send() {
         }
       }
 
-      await scrollToBottom()
-      return
+      await scrollToBottom();
+      return;
     }
-
   } catch (e) {
-    errorMessage.value = e instanceof Error ? e.message : '发送失败'
+    errorMessage.value = e instanceof Error ? e.message : "发送失败";
     // restore input for convenience
-    input.value = content
+    input.value = content;
   } finally {
-    sending.value = false
+    sending.value = false;
   }
 }
 
 function onInputKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Enter') return
-  if (e.shiftKey) return
-  e.preventDefault()
-  void send()
+  if (e.key !== "Enter") return;
+  if (e.shiftKey) return;
+  e.preventDefault();
+  void send();
 }
 
 const suggestions = [
-  '帮我规划从明天开始的一次 3 天 2 夜的杭州旅行',
-  '帮我制定一份从上海站到杭州站的火车票',
-  '给我一个适合亲子出游的上海行程安排，计划后天出发',
-  '预算 3000 元，帮我制定一份成都旅行计划',
-  '第一次去西安，哪些景点最值得去？',
-  '帮我列一份这个暑假的云南旅行必备物品清单',
-]
+  "帮我规划从明天开始的一次 3 天 2 夜的杭州旅行，主要涉及到交通/饮食/景点",
+  "帮我制定一份韶关的旅游攻略，帮我介绍一下这个地方的历史",
+  "给我一个适合亲子出游的上海行程安排，计划后天出发，我希望得到一份更适合家庭的旅游攻略",
+  "总预算 3000 元，帮我制定一份成都旅行计划，我们有3个人",
+  "第一次去西安，哪些景点最值得去？",
+  "帮我列一份这个暑假的云南旅行必备物品清单",
+];
 
 onMounted(async () => {
-  ensureActiveSession()
-  await loadLists()
-})
+  ensureActiveSession();
+  await loadLists();
+});
 
 watch(
   () => activeSessionId.value,
   () => {
-    void scrollToBottom()
-  },
-)
+    void scrollToBottom();
+  }
+);
 </script>
 
 <template>
