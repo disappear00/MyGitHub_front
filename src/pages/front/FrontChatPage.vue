@@ -11,6 +11,7 @@ import {
   saveChatSessions,
   upsertChatSession,
   type ChatSession,
+  type ChatSessionMessage,
 } from '@/lib/chatSessions'
 import { sseJsonPost } from '@/lib/sse'
 import type { AgentResponse, AIModelResponse, KnowledgeBaseResponse } from '@/lib/types'
@@ -82,6 +83,75 @@ let currentToolCallsLog: Array<{type: 'call' | 'result'; round: number; data: Re
 const expandedToolLogs = ref(new Set<string>())  // 展开状态的工具日志（key = message.at）
 const reactSteps = ref<Array<{phase: 'thought' | 'action' | 'observation' | 'final'; round?: number; data: Record<string, unknown>; content?: string; at: number}>>([])  // ReAct 流程步骤
 
+const MAX_REACT_STEPS = 24
+const MAX_TOOL_LOG_ENTRIES = 40
+const MAX_DEBUG_STRING_LENGTH = 4000
+const MAX_DEBUG_ARRAY_ITEMS = 20
+const MAX_DEBUG_OBJECT_KEYS = 30
+
+let suspendSessionPersistence = false
+
+function truncateDebugString(value: string) {
+  if (value.length <= MAX_DEBUG_STRING_LENGTH) return value
+  return `${value.slice(0, MAX_DEBUG_STRING_LENGTH)}\n...[truncated ${value.length - MAX_DEBUG_STRING_LENGTH} chars]`
+}
+
+function shrinkDebugValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return truncateDebugString(value)
+  if (value === null || value === undefined) return value
+  if (typeof value !== 'object') return value
+  if (depth >= 3) return '[truncated]'
+
+  if (Array.isArray(value)) {
+    return value.slice(0, MAX_DEBUG_ARRAY_ITEMS).map((item) => shrinkDebugValue(item, depth + 1))
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, MAX_DEBUG_OBJECT_KEYS)
+      .map(([key, entryValue]) => [key, shrinkDebugValue(entryValue, depth + 1)]),
+  )
+}
+
+function formatDebugJson(value: unknown): string {
+  return formatJson(shrinkDebugValue(value))
+}
+
+function pushReactStep(step: {
+  phase: 'thought' | 'action' | 'observation' | 'final'
+  round?: number
+  data: Record<string, unknown>
+  content?: string
+  at: number
+}) {
+  reactSteps.value = [...reactSteps.value, { ...step, data: shrinkDebugValue(step.data) as Record<string, unknown> }].slice(
+    -MAX_REACT_STEPS,
+  )
+}
+
+function pushToolLog(entry: {
+  type: 'call' | 'result'
+  round: number
+  data: Record<string, unknown>
+  at: number
+}) {
+  currentToolCallsLog = [...currentToolCallsLog, { ...entry, data: shrinkDebugValue(entry.data) as Record<string, unknown> }].slice(
+    -MAX_TOOL_LOG_ENTRIES,
+  )
+}
+
+function snapshotReactSteps() {
+  return [...reactSteps.value]
+}
+
+function snapshotToolCallsLog() {
+  return [...currentToolCallsLog]
+}
+
+function getRawLoading(meta: Record<string, unknown> | undefined) {
+  return meta?._rawLoading === true
+}
+
 function toggleToolLog(m: { at: number }) {
   const key = String(m.at)
   const next = new Set(expandedToolLogs.value)
@@ -134,7 +204,12 @@ const selectedKbNames = computed(() => {
 
 function persistSessions(next: ChatSession[]) {
   sessions.value = next
+  if (suspendSessionPersistence) return
   saveChatSessions(next)
+}
+
+function flushSessionPersistence() {
+  saveChatSessions(sessions.value)
 }
 
 function setSession(session: ChatSession, opts: { resetIfStarted: boolean }) {
@@ -237,6 +312,7 @@ async function send() {
   agentAbort = null
   rawLlmAbort?.abort()
   rawLlmAbort = null
+  suspendSessionPersistence = true
 
   const now = Date.now()
   const userMsg = { role: 'user' as const, content, at: now }
@@ -270,7 +346,7 @@ async function send() {
           content: res.content,
           at: Date.now(),
           meta: {
-            raw_content: res.raw_content ?? undefined,
+            raw_content: typeof res.raw_content === 'string' ? truncateDebugString(res.raw_content) : undefined,
             sources: res.sources ?? undefined,
           },
         }
@@ -319,7 +395,7 @@ async function send() {
             signal: rawLlmAbort.signal,
             onData: (delta) => {
               // 累积流式内容并实时更新UI
-              rawLlmStreamContent += delta
+              rawLlmStreamContent = truncateDebugString(rawLlmStreamContent + delta)
               rawLlmContent.value = rawLlmStreamContent
               
               const cur = activeSession.value
@@ -329,6 +405,7 @@ async function send() {
                 while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
                 if (idx >= 0 && msgs[idx]) {
                   const last = msgs[idx]
+                  if (!last) return
                   msgs[idx] = { 
                     ...last, 
                     meta: { 
@@ -351,6 +428,7 @@ async function send() {
                 while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
                 if (idx >= 0 && msgs[idx]) {
                   const last = msgs[idx]
+                  if (!last) return
                   msgs[idx] = { ...last, meta: { ...(last.meta as Record<string, unknown>), _rawLoading: false } }
                   setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
                 }
@@ -401,7 +479,7 @@ async function send() {
                 }
                 
                 // 记录 ReAct 步骤
-                reactSteps.value.push({
+                pushReactStep({
                   phase: 'thought',
                   round: payload.round,
                   data: payload,
@@ -417,15 +495,16 @@ async function send() {
                 while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
                 if (idx >= 0 && msgs[idx]) {
                   const last = msgs[idx]
+                  if (!last) return
                   msgs[idx] = {
                     ...last,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
-                      react_steps: [...reactSteps.value],
+                      react_steps: snapshotReactSteps(),
                       current_phase: 'thought',
                       current_round: payload.round,
-                      tool_calls_log: [...currentToolCallsLog],
-                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                      tool_calls_log: snapshotToolCallsLog(),
+                      _rawLoading: getRawLoading(last.meta as Record<string, unknown> | undefined),
                     },
                   }
                   setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
@@ -442,7 +521,7 @@ async function send() {
                 }
                 
                 // 记录 ReAct 步骤
-                reactSteps.value.push({
+                pushReactStep({
                   phase: 'action',
                   round: payload.round,
                   data: payload,
@@ -460,7 +539,7 @@ async function send() {
                   data: { tool_calls: toolCalls }, 
                   at: Date.now() 
                 }
-                currentToolCallsLog.push(logEntry)
+                pushToolLog(logEntry)
 
                 const cur = activeSession.value
                 if (!cur) return
@@ -471,15 +550,16 @@ async function send() {
                 while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
                 if (idx >= 0 && msgs[idx]) {
                   const last = msgs[idx]
+                  if (!last) return
                   msgs[idx] = {
                     ...last,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
-                      react_steps: [...reactSteps.value],
+                      react_steps: snapshotReactSteps(),
                       current_phase: 'action',
                       current_round: payload.round,
-                      tool_calls_log: [...currentToolCallsLog],
-                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                      tool_calls_log: snapshotToolCallsLog(),
+                      _rawLoading: getRawLoading(last.meta as Record<string, unknown> | undefined),
                     },
                   }
                   setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
@@ -489,7 +569,7 @@ async function send() {
                 const lines = toolCalls.map((c) => {
                   const name = typeof c.name === 'string' ? c.name : '(unknown)'
                   const args = c.arguments ?? {}
-                  return `- ${name} ${formatJson(args)}`
+                  return `- ${name} ${formatDebugJson(args)}`
                 })
 
                 const actionMsg = {
@@ -499,7 +579,7 @@ async function send() {
                     event: 'react_action', 
                     phase: 'action',
                     round: payload.round ?? toolRound, 
-                    tool_calls: toolCalls,
+                    tool_calls: shrinkDebugValue(toolCalls) as Array<{ id?: string; name?: string; arguments?: unknown }>,
                     thought: payload.thought,
                   } as Record<string, unknown>,
                   at: Date.now(),
@@ -526,7 +606,7 @@ async function send() {
                 
                 // 如果是"正在分析"的中间状态，只更新 UI 状态
                 if (payload.status === 'analyzing' || !payload.status || !payload.content) {
-                  reactSteps.value.push({
+                  pushReactStep({
                     phase: 'observation',
                     round: payload.round,
                     data: payload,
@@ -540,15 +620,16 @@ async function send() {
                     while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
                     if (idx >= 0 && msgs[idx]) {
                       const last = msgs[idx]
+                      if (!last) return
                       msgs[idx] = {
                         ...last,
                         meta: {
                           ...(last.meta as Record<string, unknown>),
-                          react_steps: [...reactSteps.value],
+                          react_steps: snapshotReactSteps(),
                           current_phase: 'observation',
                           current_round: payload.round,
-                          tool_calls_log: [...currentToolCallsLog],
-                          _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                          tool_calls_log: snapshotToolCallsLog(),
+                          _rawLoading: getRawLoading(last.meta as Record<string, unknown> | undefined),
                         },
                       }
                       setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
@@ -581,7 +662,7 @@ async function send() {
                 // ── status: 'complete' - LLM 分析完成，包含真正的洞察 ──
                 
                 // 记录 ReAct 步骤
-                reactSteps.value.push({
+                pushReactStep({
                   phase: 'observation',
                   round: payload.round,
                   data: payload,
@@ -591,7 +672,7 @@ async function send() {
                 // 收集工具结果到日志
                 const toolResults = Array.isArray(payload.tool_results) ? payload.tool_results : []
                 for (const tr of toolResults) {
-                  currentToolCallsLog.push({ 
+                  pushToolLog({
                     type: 'result' as const, 
                     round: payload.round ?? reactSteps.value.length, 
                     data: { ...tr }, 
@@ -608,15 +689,16 @@ async function send() {
                 while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
                 if (idx >= 0 && msgs[idx]) {
                   const last = msgs[idx]
+                  if (!last) return
                   msgs[idx] = {
                     ...last,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
-                      react_steps: [...reactSteps.value],
+                      react_steps: snapshotReactSteps(),
                       current_phase: 'observation',
                       current_round: payload.round,
-                      tool_calls_log: [...currentToolCallsLog],
-                      _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                      tool_calls_log: snapshotToolCallsLog(),
+                      _rawLoading: getRawLoading(last.meta as Record<string, unknown> | undefined),
                     },
                   }
                   setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
@@ -648,8 +730,8 @@ async function send() {
                     status: 'complete',
                     round: payload.round,
                     observation_content: payload.content,  // LLM 的洞察内容
-                    tool_results: toolResults,
-                    tool_summary: payload.tool_summary,
+                    tool_results: shrinkDebugValue(toolResults) as Array<Record<string, unknown>>,
+                    tool_summary: shrinkDebugValue(payload.tool_summary) as Array<{name?: string; success?: boolean}>,
                   } as Record<string, unknown>,
                   at: Date.now(),
                 }
@@ -672,7 +754,7 @@ async function send() {
 
                 // 收集到工具调用日志（用于对比模式Agent栏内展示）
                 const logEntry = { type: 'call' as const, round: toolRound, data: { tool_calls: toolCalls }, at: Date.now() }
-                currentToolCallsLog.push(logEntry)
+                pushToolLog(logEntry)
 
                 // 更新当前 assistant 消息的 meta，嵌入工具调用信息
                 const cur = activeSession.value
@@ -682,12 +764,13 @@ async function send() {
                   while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
                   if (idx >= 0 && msgs[idx]) {
                     const last = msgs[idx]
+                    if (!last) return
                     msgs[idx] = {
                       ...last,
                       meta: {
                         ...(last.meta as Record<string, unknown>),
-                        tool_calls_log: [...currentToolCallsLog],
-                        _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                        tool_calls_log: snapshotToolCallsLog(),
+                        _rawLoading: getRawLoading(last.meta as Record<string, unknown> | undefined),
                       },
                     }
                     setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
@@ -698,13 +781,17 @@ async function send() {
                 const lines = toolCalls.map((c) => {
                   const name = typeof c.name === 'string' ? c.name : '(unknown)'
                   const args = c.arguments ?? {}
-                  return `- ${name} ${formatJson(args)}`
+                  return `- ${name} ${formatDebugJson(args)}`
                 })
 
                 const toolMsg = {
                   role: 'tool' as const,
                   content: `【工具调用】第 ${toolRound} 轮\n${lines.join('\n')}`.trim(),
-                  meta: { event: 'tool_call', tool_round: toolRound, tool_calls: toolCalls },
+                  meta: {
+                    event: 'tool_call',
+                    tool_round: toolRound,
+                    tool_calls: shrinkDebugValue(toolCalls) as Array<{ id?: string; name?: string; arguments?: unknown }>,
+                  },
                   at: Date.now(),
                 }
 
@@ -728,7 +815,7 @@ async function send() {
                 const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '(unknown)'
 
                 // 收集到工具调用日志
-                currentToolCallsLog.push({ type: 'result' as const, round: toolRound, data: { ...payload }, at: Date.now() })
+                pushToolLog({ type: 'result' as const, round: toolRound, data: { ...payload }, at: Date.now() })
 
                 // 更新当前 assistant 消息的 meta
                 const cur = activeSession.value
@@ -738,12 +825,13 @@ async function send() {
                   while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
                   if (idx >= 0 && msgs[idx]) {
                     const last = msgs[idx]
+                    if (!last) return
                     msgs[idx] = {
                       ...last,
                       meta: {
                         ...(last.meta as Record<string, unknown>),
-                        tool_calls_log: [...currentToolCallsLog],
-                        _rawLoading: (last.meta as Record<string, unknown>)?._rawLoading ?? false,
+                        tool_calls_log: snapshotToolCallsLog(),
+                        _rawLoading: getRawLoading(last.meta as Record<string, unknown> | undefined),
                       },
                     }
                     setSession({ ...cur, updatedAt: Date.now(), messages: msgs }, { resetIfStarted: false })
@@ -751,11 +839,11 @@ async function send() {
                 }
 
                 // 同时保留独立工具消息（普通模式使用）
-                const outText = formatJson(payload.output ?? {})
+                const outText = formatDebugJson(payload.output ?? {})
                 const toolMsg = {
                   role: 'tool' as const,
                   content: `【工具结果】第 ${toolRound} 轮 ${toolName}\n${outText}`.trim(),
-                  meta: { event: 'tool_result', ...payload },
+                  meta: { event: 'tool_result', ...(shrinkDebugValue(payload) as Record<string, unknown>) },
                   at: Date.now(),
                 }
 
@@ -774,7 +862,7 @@ async function send() {
                 if (!cur) return
                 
                 // 标记 ReAct 循环完成
-                reactSteps.value.push({
+                pushReactStep({
                   phase: 'final',
                   data: { content: finalContent },
                   at: Date.now(),
@@ -795,9 +883,9 @@ async function send() {
                     content: finalContent,
                     meta: {
                       ...(last.meta as Record<string, unknown>),
-                      react_steps: [...reactSteps.value],
+                      react_steps: snapshotReactSteps(),
                       current_phase: 'final',
-                      tool_calls_log: [...currentToolCallsLog],
+                      tool_calls_log: snapshotToolCallsLog(),
                       raw_content: rawLlmContent.value ?? existingRaw ?? '',
                       _rawLoading: !rawLlmContent.value && compareMode.value,
                     },
@@ -846,6 +934,7 @@ async function send() {
             while (idx >= 0 && msgs[idx]?.role !== 'assistant') idx -= 1
             if (idx >= 0 && msgs[idx]) {
               const last = msgs[idx]
+              if (!last) return
               const meta = last.meta as Record<string, unknown>
               if (!meta?.raw_content || meta._rawLoading) {
                 msgs[idx] = { ...last, meta: { ...meta, raw_content: '[原始 LLM 响应超时]', _rawLoading: false } }
@@ -867,6 +956,8 @@ async function send() {
     // restore input for convenience
     input.value = content
   } finally {
+    suspendSessionPersistence = false
+    flushSessionPersistence()
     sending.value = false
   }
 }
